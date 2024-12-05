@@ -1,0 +1,52 @@
+name: Attest docker image
+description: 'This action is used to attest docker image'
+inputs:
+  dockerImage:
+    description: Docker Image
+    required: true
+  dockerImageDigest:
+    description: Docker Image Digest     
+    required: false
+  dockerRegistry:
+    description: Docker registry (Default docker.io)
+    default: "docker.io"
+    required: false
+  DOCKER_USERNAME:
+    description: Docker Registry username
+    required: true
+  DOCKER_PASSWORD:
+    description: Docker Registry user password
+    required: true
+  attestImageRegistry:
+    description: Docker Image Registry for Attestation by Github (default docker.io)        
+    required: false
+    default: "docker.io"
+  attestImage:
+    description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
+    required: false
+    default: "false"
+runs:
+  using: "composite" 
+  steps:
+    - name: Log in to Docker Registry
+      if: ${{ inputs.attestImage == true }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.dockerRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ env.digest }}
+      shell: bash
+      if: ${{ inputs.attestImage == true }}
+      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ env.digest }}
+    - name: Attest the publised Docker image with Github
+      if: ${{ inputs.attestImage == true }}
+      uses: actions/attest-build-provenance@v1
+      id: attest
+      with:
+        subject-name: ${{ inputs.attestImageRegistry }}/${{ inputs.dockerImage }}
+        subject-digest: ${{ inputs.dockerImageDigest }}
+        push-to-registry: true
+branding:
+  icon: "anchor"
+  color: "gray-dark"

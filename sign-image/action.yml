@@ -1,0 +1,55 @@
+name: Sign docker image
+description: 'This action is used to sign docker images'
+inputs:
+  dockerImage:
+    description: Docker Image
+    required: true
+  dockerRegistry:
+    description: Docker registry (Default docker.io)
+    default: "docker.io"
+    required: false
+  signImage:
+    description: Apply signature flag
+    default: "true"
+    required: false
+  DOCKER_USERNAME:
+    description: Docker Registry username
+    required: true
+  DOCKER_PASSWORD:
+    description: Docker Registry user password
+    required: true
+  DOCKER_PRIVATE_KEY_ID:
+    description: Docker Hub Signing Private Key ID
+    required: false
+  DOCKER_PRIVATE_KEY:
+    description: Docker Hub Signing Private Key
+    required: false
+  DOCKER_PRIVATE_KEY_PASSPHRASE:
+    description: Docker Hub Signing Private Key Passphrase
+    required: false
+
+runs:
+  using: "composite"  
+  steps:
+    - name: Log in to Docker Registry
+      if: ${{ inputs.signImage == true }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.dockerRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ matrix.tags }}
+      shell: bash
+      if: ${{ inputs.signImage == true }}
+      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ matrix.tags }}
+    - name: Sign the published Dockerhub Docker image with DCT
+      if: ${{ inputs.signImage == true }}
+      uses: sudo-bot/action-docker-sign@latest
+      with:
+        image-ref: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ matrix.tags }}
+        private-key-id: "${{ inputs.DOCKER_PRIVATE_KEY_ID }}"
+        private-key: ${{ inputs.DOCKER_PRIVATE_KEY }}
+        private-key-passphrase: ${{ inputs.DOCKER_PRIVATE_KEY_PASSPHRASE }}
+branding:
+  icon: "anchor"
+  color: "gray-dark"

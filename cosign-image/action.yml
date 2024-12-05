@@ -1,0 +1,81 @@
+name: Cosign docker image
+description: 'This action is used to Cosign docker images'
+inputs:
+  dockerImage:
+    description: Docker Image
+    required: true
+  dockerImageTag:
+    description: Docker Image tag (comma separated for multiple inside table)
+    default: "['latest']"
+  dockerImageDigest:
+    description: Docker Image Digest     
+    required: false
+  dockerRegistry:
+    description: Docker registry (Default docker.io)
+    default: "docker.io"
+    required: false
+  DOCKER_USERNAME:
+    description: Docker Registry username
+    required: true
+  DOCKER_PASSWORD:
+    description: Docker Registry user password
+    required: true
+  cosignImage:
+    description: Enable Docker Image Signing (Cosign)
+    required: false
+    default: "false"
+  cosignOidcImage:
+    description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)    
+    required: false
+    default: "false"
+  COSIGN_PRIVATE_KEY:
+    description: Cosign Signing Private Key
+    required: false
+  COSIGN_PASSWORD:
+    description: Cosign Signing Private Key Passphrase
+    required: false
+runs:
+  using: "composite"  
+  steps:
+    - name: Log in to Docker Registry
+      if: ${{ inputs.cosignImage == true }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.dockerRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+    - name: Install Cosign
+      if: ${{ inputs.cosignImage == true }}
+      uses: sigstore/cosign-installer@v3.7.0
+    - name: Sign the published ghcr.io Docker image with Cosign
+      if: ${{ inputs.cosignImage == true }}
+      shell: bash
+      run: |
+        images=""
+        TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
+        for tag in ${TAGS_LIST}; do
+          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+          docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST}
+        done
+        cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${images}
+      env:
+        COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
+        COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
+        DIGEST: ${{ inputs.dockerImageDigest }}
+        TAGS: ${{ inputs.dockerImageTag }}
+    - name: Sign the published ghcr.io Docker image with GitHub OIDC Token
+      if: ${{ inputs.cosignOidcImage == true }}
+      shell: bash
+      run: |
+          images=""
+          TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
+          for tag in ${TAGS_LIST}; do
+            images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+          done
+          cosign sign --yes ${images}
+      env:
+        DIGEST: ${{ inputs.dockerImageDigest }}
+        TAGS: ${{ inputs.dockerImageTag }}
+branding:
+  icon: "anchor"
+  color: "gray-dark"
