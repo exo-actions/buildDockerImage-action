@@ -1,0 +1,76 @@
+name: Build docker image
+description: 'This action is used to build docker images'
+inputs:
+  dockerImage:
+    description: Docker Image
+    required: true
+  dockerImageTag:
+    description: Docker Image tag (comma separated for multiple)
+    default: "latest"
+    required: false
+  dockerFileContext:
+    description: Dockerfile Context
+    default: "."
+    required: false
+  dockerRegistry:
+    description: Docker registry (Default docker.io)
+    default: "docker.io"
+    required: false
+  DOCKER_USERNAME:
+    description: Docker Registry username
+    required: true
+  DOCKER_PASSWORD:
+    description: Docker Registry user password
+    required: true
+outputs:
+  tags:
+    description: 'pushed docker images tags'
+    value: ${{ steps.additional-jsontags.outputs.tags}}
+  digest:
+    description: 'pushed docker images digest'
+    value: ${{ steps.get-digest.outputs.digest}}
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - name: Log in to Docker Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.dockerRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+    - name: Build list of additional tags
+      id: additional-tags
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.setOutput('tags', `${{ inputs.dockerImageTag }}`.split(",").join("\n"))     
+    - name: Extract metadata (tags, labels) for Docker
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}
+        tags: |
+          ${{ steps.additional-tags.outputs.tags }}
+    - name: Build and push Docker image to Registry
+      id: push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.dockerFileContext }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+    - name: Build Json array of tags for Docker Signing
+      shell: bash
+      id: additional-jsontags
+      run: |
+        echo tags=$(echo ${{ inputs.dockerImageTag }} | sed 's/,/\n/g'| jq --raw-input | jq --slurp -c) >> $GITHUB_OUTPUT
+    - name: Get Digests for attest and cosign
+      shell: bash
+      id: get-digest
+      run: |
+        echo digest=$(echo ${{ steps.push.outputs.digest}}) >> $GITHUB_OUTPUT
+branding:
+  icon: "anchor"
+  color: "gray-dark"
