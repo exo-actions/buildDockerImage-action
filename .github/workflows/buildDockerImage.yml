@@ -1,0 +1,144 @@
+name: Create and Publish Docker Image to DockerHub
+
+on:
+  workflow_call:
+    inputs:
+      dockerImage:
+        description: Docker Image
+        required: true
+        type: string
+      dockerImageTag:
+        description: Docker Image tag (comma separated for multiple)
+        default: "latest"
+        required: false
+        type: string
+      dockerFileContext:
+        description: Dockerfile Context
+        default: "."
+        required: false
+        type: string
+      dockerRegistry:
+        description: Docker registry (Default docker.io)
+        default: "docker.io"
+        required: false
+        type: string
+      signImage:
+        description: Enable Docker Image Signing (DCT)
+        type: boolean
+        required: false
+        default: false
+      cosignImage:
+        description: Enable Docker Image Signing (Cosign)
+        type: boolean
+        required: false
+        default: false
+      cosignOidcImage:
+        description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)
+        type: boolean
+        required: false
+        default: false
+      attestImage:
+        description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
+        type: boolean
+        required: false
+        default: false
+      attestImageRegistry:
+        description: Docker Image Registry for Attestation by Github (default docker.io)
+        type: string
+        required: false
+        default: "docker.io"
+    secrets:
+      DOCKER_USERNAME:
+        description: Docker Registry username
+        required: true
+      DOCKER_PASSWORD:
+        description: Docker Registry user password
+        required: true
+      DOCKER_PRIVATE_KEY_ID:
+        description: Docker Hub Signing Private Key ID
+        required: false
+      DOCKER_PRIVATE_KEY:
+        description: Docker Hub Signing Private Key
+        required: false
+      DOCKER_PRIVATE_KEY_PASSPHRASE:
+        description: Docker Hub Signing Private Key Passphrase
+        required: false
+      COSIGN_PRIVATE_KEY:
+        description: Cosign Signing Private Key
+        required: false
+      COSIGN_PASSWORD:
+        description: Cosign Signing Private Key Passphrase
+        required: false
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.build-docker-image.outputs.tags }}
+      digest: ${{ steps.build-docker-image.outputs.digest }}
+
+    steps:
+      - name: build docker image
+        uses: exo-actions/buildDockerImage-action/build-and-push-image@v1 
+        id: build-docker-image
+        with:
+          dockerImage: ${{inputs.dockerImage}}
+          dockerImageTag: ${{ inputs.dockerImageTag }}
+          dockerRegistry: ${{inputs.dockerRegistry}} 
+          dockerFileContext: ${{inputs.dockerFileContext}}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  sign-image:
+    runs-on: ubuntu-latest
+    needs: build-and-push-image    
+    strategy:
+      matrix:
+        tags: ${{ fromJson(needs.build-and-push-image.outputs.tags) }}
+      fail-fast: false
+      max-parallel: 1
+    steps:
+      - name: sign docker image
+        uses: exo-actions/buildDockerImage-action/sign-image@v1 
+        id: sign-docker-image
+        with:
+          dockerImage: ${{inputs.dockerImage}} 
+          dockerRegistry: ${{inputs.dockerRegistry}}
+          signImage: ${{inputs.signImage}}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_PRIVATE_KEY_ID: ${{secrets.DOCKER_PRIVATE_KEY_ID}}
+          DOCKER_PRIVATE_KEY: ${{secrets.DOCKER_PRIVATE_KEY}}
+          DOCKER_PRIVATE_KEY_PASSPHRASE: ${{secrets.DOCKER_PRIVATE_KEY_PASSPHRASE}}
+  attest-image:
+    runs-on: ubuntu-latest
+    needs: build-and-push-image  
+    steps:
+      - name: attest docker image
+        uses: exo-actions/buildDockerImage-action/attest-image@v1 
+        id: attest-docker-image
+        with:
+          dockerImage: ${{inputs.dockerImage}} 
+          dockerImageDigest: ${{ needs.build-and-push-image.outputs.digest }}
+          dockerRegistry: ${{inputs.dockerRegistry}}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          attestImage: ${{inputs.attestImage}}
+          attestImageRegistry: ${{inputs.attestImageRegistry}}
+  cosign-image:
+    runs-on: ubuntu-latest
+    needs: build-and-push-image
+    steps:
+      - name: cosign docker image
+        uses: exo-actions/buildDockerImage-action/cosign-image@v1 
+        id: cosign-docker-image
+        with:
+          dockerImage: ${{inputs.dockerImage}}
+          dockerImageTag: ${{ needs.build-and-push-image.outputs.tags }} 
+          dockerImageDigest: ${{ needs.build-and-push-image.outputs.digest }}
+          dockerRegistry: ${{inputs.dockerRegistry}} 
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          cosignImage: ${{inputs.cosignImage}}
+          cosignOidcImage: ${{inputs.cosignOidcImage}}
+          COSIGN_PRIVATE_KEY: ${{secrets.COSIGN_PRIVATE_KEY}}
+          COSIGN_PASSWORD: ${{secrets.COSIGN_PASSWORD}}
