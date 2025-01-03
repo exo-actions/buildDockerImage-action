@@ -1,0 +1,111 @@
+name: Create publish, sign, cosign and attest docker image
+description: this action allow to create publish, sign, cosign and attest docker image. The sign, cosign and attest are optionnals
+inputs:
+    dockerImage:
+      description: Docker Image
+      required: true
+    dockerImageTag:
+      description: Docker Image tag (comma separated for multiple)
+      default: "latest"
+      required: false
+    dockerFileContext:
+      description: Dockerfile Context
+      default: "."
+      required: false
+    dockerRegistry:
+      description: Docker registry (Default docker.io)
+      default: "docker.io"
+      required: false
+    signImage:
+      description: Enable Docker Image Signing (DCT)
+      default: "false"
+      required: false
+    cosignImage:
+      description: Enable Docker Image Signing (Cosign)
+      default: "false"
+      required: false
+    cosignOidcImage:
+      description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)
+      default: "false"
+      required: false
+    attestImage:
+      description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
+      default: "false"
+      required: false
+    attestImageRegistry:
+      description: Docker Image Registry for Attestation by Github (default docker.io)
+      required: false
+      default: "docker.io"
+    DOCKER_USERNAME:
+      description: Docker Registry username
+      required: true
+    DOCKER_PASSWORD:
+      description: Docker Registry user password
+      required: true
+    DOCKER_PRIVATE_KEY_ID:
+      description: Docker Hub Signing Private Key ID
+      required: false
+    DOCKER_PRIVATE_KEY:
+      description: Docker Hub Signing Private Key
+      required: false
+    DOCKER_PRIVATE_KEY_PASSPHRASE:
+      description: Docker Hub Signing Private Key Passphrase
+      required: false
+    COSIGN_PRIVATE_KEY:
+      description: Cosign Signing Private Key
+      required: false
+    COSIGN_PASSWORD:
+      description: Cosign Signing Private Key Passphrase
+      default: "false"
+      required: false 
+runs:
+  using: "composite"  
+  steps:
+    - name: build docker image
+      uses: exo-actions/buildDockerImage-action/build-and-push-image@DEFINE_GLOBAL_ACTION
+      id: build-docker-image
+      with:
+        dockerImage: ${{inputs.dockerImage}}
+        dockerImageTag: ${{ inputs.dockerImageTag }}
+        dockerRegistry: ${{inputs.dockerRegistry}} 
+        dockerFileContext: ${{inputs.dockerFileContext}}
+        DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
+    - name: sign docker image
+      uses: exo-actions/buildDockerImage-action/sign-image@DEFINE_GLOBAL_ACTION 
+      id: sign-docker-image      
+      with:
+        dockerImage: ${{inputs.dockerImage}} 
+        dockerRegistry: ${{inputs.dockerRegistry}}
+        signImage: ${{inputs.signImage}}
+        DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
+        DOCKER_PRIVATE_KEY_ID: ${{inputs.DOCKER_PRIVATE_KEY_ID}}
+        DOCKER_PRIVATE_KEY: ${{inputs.DOCKER_PRIVATE_KEY}}
+        DOCKER_PRIVATE_KEY_PASSPHRASE: ${{inputs.DOCKER_PRIVATE_KEY_PASSPHRASE}}
+        tags: ${{steps.build-docker-image.outputs.tags}}
+    - name: attest docker image
+      uses: exo-actions/buildDockerImage-action/attest-image@DEFINE_GLOBAL_ACTION 
+      id: attest-docker-image
+      with:
+        dockerImage: ${{inputs.dockerImage}} 
+        dockerImageDigest: ${{ steps.build-docker-image.outputs.digest }}
+        dockerRegistry: ${{inputs.dockerRegistry}}
+        DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
+        attestImage: ${{inputs.attestImage}}
+        attestImageRegistry: ${{inputs.attestImageRegistry}}
+    - name: cosign docker image
+      uses: exo-actions/buildDockerImage-action/cosign-image@DEFINE_GLOBAL_ACTION 
+      id: cosign-docker-image
+      with:
+        dockerImage: ${{inputs.dockerImage}}
+        dockerImageTag: ${{ steps.build-docker-image.outputs.tags }} 
+        dockerImageDigest: ${{ steps.build-docker-image.outputs.digest }}
+        dockerRegistry: ${{inputs.dockerRegistry}} 
+        DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
+        cosignImage: ${{inputs.cosignImage}}
+        cosignOidcImage: ${{inputs.cosignOidcImage}}
+        COSIGN_PRIVATE_KEY: ${{inputs.COSIGN_PRIVATE_KEY}}
+        COSIGN_PASSWORD: ${{inputs.COSIGN_PASSWORD}}

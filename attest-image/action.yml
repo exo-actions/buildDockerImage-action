@@ -35,10 +35,10 @@ runs:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
-    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ env.digest }}
+    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
       shell: bash
       if: ${{ inputs.attestImage == true }}
-      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ env.digest }}
+      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
     - name: Attest the publised Docker image with Github
       if: ${{ inputs.attestImage == true }}
       uses: actions/attest-build-provenance@v1
