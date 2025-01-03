@@ -62,7 +62,7 @@ runs:
   using: "composite"  
   steps:
     - name: build docker image
-      uses: exo-actions/buildDockerImage-action/build-and-push-image@DEFINE_GLOBAL_ACTION
+      uses: exo-actions/buildDockerImage-action/build-and-push-image@v1
       id: build-docker-image
       with:
         dockerImage: ${{inputs.dockerImage}}
@@ -72,7 +72,7 @@ runs:
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
     - name: sign docker image
-      uses: exo-actions/buildDockerImage-action/sign-image@DEFINE_GLOBAL_ACTION 
+      uses: exo-actions/buildDockerImage-action/sign-image@v1 
       id: sign-docker-image      
       with:
         dockerImage: ${{inputs.dockerImage}} 
@@ -83,9 +83,9 @@ runs:
         DOCKER_PRIVATE_KEY_ID: ${{inputs.DOCKER_PRIVATE_KEY_ID}}
         DOCKER_PRIVATE_KEY: ${{inputs.DOCKER_PRIVATE_KEY}}
         DOCKER_PRIVATE_KEY_PASSPHRASE: ${{inputs.DOCKER_PRIVATE_KEY_PASSPHRASE}}
-        tags: ${{steps.build-docker-image.outputs.tags}}
+        dockerImageTag: ${{steps.build-docker-image.outputs.tags}}
     - name: attest docker image
-      uses: exo-actions/buildDockerImage-action/attest-image@DEFINE_GLOBAL_ACTION 
+      uses: exo-actions/buildDockerImage-action/attest-image@v1 
       id: attest-docker-image
       with:
         dockerImage: ${{inputs.dockerImage}} 
@@ -96,7 +96,7 @@ runs:
         attestImage: ${{inputs.attestImage}}
         attestImageRegistry: ${{inputs.attestImageRegistry}}
     - name: cosign docker image
-      uses: exo-actions/buildDockerImage-action/cosign-image@DEFINE_GLOBAL_ACTION 
+      uses: exo-actions/buildDockerImage-action/cosign-image@v1 
       id: cosign-docker-image
       with:
         dockerImage: ${{inputs.dockerImage}}

@@ -4,7 +4,7 @@ inputs:
   dockerImage:
     description: Docker Image
     required: true
-  tags:
+  dockerImageTag:
     description: Docker Images Tags
     required: true
   dockerRegistry:
@@ -41,15 +41,15 @@ runs:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
-    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.tags}}
+    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.dockerImageTag}}
       shell: bash
       if: ${{ inputs.signImage == true }}
-      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.tags}}
+      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.dockerImageTag}}
     - name: Sign the published Dockerhub Docker image with DCT
       if: ${{ inputs.signImage == true }}
       uses: sudo-bot/action-docker-sign@latest
       with:
-        image-ref: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.tags}}
+        image-ref: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.dockerImageTag}}
         private-key-id: "${{ inputs.DOCKER_PRIVATE_KEY_ID }}"
         private-key: ${{ inputs.DOCKER_PRIVATE_KEY }}
         private-key-passphrase: ${{ inputs.DOCKER_PRIVATE_KEY_PASSPHRASE }}
