@@ -1,5 +1,6 @@
 name: Create publish, sign, cosign and attest docker image
 description: this action allow to create publish, sign, cosign and attest docker image. The sign, cosign and attest are optionnals
+author: 'eXo Platform'
 inputs:
     dockerImage:
       description: Docker Image
@@ -109,3 +110,6 @@ runs:
         cosignOidcImage: ${{inputs.cosignOidcImage}}
         COSIGN_PRIVATE_KEY: ${{inputs.COSIGN_PRIVATE_KEY}}
         COSIGN_PASSWORD: ${{inputs.COSIGN_PASSWORD}}
+branding:
+  icon: "anchor"
+  color: "gray-dark"
