@@ -140,21 +140,22 @@ jobs:
 
 | Name                 | Description                                                                                          | Default value                    |
 |----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
-| dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``      (empty)                  |
-| dockerImageTag       | Docker Image tag (comma separated for multiple)                                                      | `latest`                         | 
+| dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``                               |
+| dockerImageTag       | Docker Image tag (comma separated for multiple)                                                      | `latest`                         |
 | dockerFileContext    | Dockerfile Context (Dockerfile location)                                                             | `.`                              |
-| dockerRegistry       | Docker registry (Default )                                                                           | `docker.io`                      |
+| dockerRegistry       | Docker registry (Default)                                                                            | `docker.io`                      |
 | DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |
 | DOCKER_PASSWORD      | Password for the previous username                                                                   | ``                               |
-
+| generateSBOM         | Flag to generate SBOM for the image                                                                 | `true`                           |
+| generateProvenance   | Flag to generate provenance for the image          
 ### sign-dockerhub-image
 
 | Name                 | Description                                                                                          | Default value                    |
 |----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
 | dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``      (empty)                  |
-| matrix.tags          | targeted docker image versions (["latest","v1.0"])                                                   | ``      (empty)                  |
+| dockerImageTag       | targeted docker image versions (["latest","v1.0"])                                                   | ``      (empty)                  |
 | dockerRegistry       | Docker registry (Default )                                                                           | `docker.io`                      |
-| signImage            | flag to enable/disable signature                                                                     | `true`                           |
+| signImage            | flag to enable/disable signature with DCT (Deprecated)                                               | `true`                           |
 | DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |
 | DOCKER_PASSWORD      | Password for the previous username                                                                   | ``                               |
 | DOCKER_PRIVATE_KEY_ID| Id of the used private key for signature                                                             | ``                               |
@@ -166,7 +167,7 @@ jobs:
 | Name                 | Description                                                                                          | Default value                    |
 |----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
 | dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``      (empty)                  |
-| matrix.tags          | targeted docker image versions (["latest","v1.0"])                                                   | ``      (empty)                  |
+| dockerImageTag       | targeted docker image versions (["latest","v1.0"])                                                   | ``      (empty)                  |
 | dockerRegistry       | Docker registry (Default )                                                                           | `docker.io`                      |
 | signImage            | flag to enable/disable signature                                                                     | `true`                           |
 | DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |

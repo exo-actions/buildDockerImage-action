@@ -1,5 +1,5 @@
 name: Sign docker image
-description: 'This action is used to sign docker images'
+description: 'Deprecated: This action is used to sign docker images'
 inputs:
   dockerImage:
     description: Docker Image

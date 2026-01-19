@@ -17,8 +17,16 @@ inputs:
       description: Docker registry (Default docker.io)
       default: "docker.io"
       required: false
+    generateSBOM:
+      description: Generate SBOM flag
+      default: "true"
+      required: false
+    generateProvenance:
+      description: Generate provenance flag
+      default: "true"
+      required: false
     signImage:
-      description: Enable Docker Image Signing (DCT)
+      description: (Deprecated) Enable Docker Image Signing (DCT)
       default: "false"
       required: false
     cosignImage:
@@ -70,6 +78,8 @@ runs:
         dockerImageTag: ${{ inputs.dockerImageTag }}
         dockerRegistry: ${{inputs.dockerRegistry}} 
         dockerFileContext: ${{inputs.dockerFileContext}}
+        generateSBOM: ${{ inputs.generateSBOM }}
+        generateProvenance: ${{ inputs.generateProvenance }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
     - name: sign docker image
