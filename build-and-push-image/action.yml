@@ -73,6 +73,7 @@ runs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        annotations: ${{ steps.meta.outputs.annotations }}
         sbom: ${{ inputs.generateSBOM }}
         provenance: ${{ inputs.generateProvenance }}
     - name: Build Json array of tags for Docker Signing
