@@ -25,6 +25,10 @@ inputs:
       description: Generate provenance flag
       default: "true"
       required: false
+    platforms:
+      description: "Comma-separated target platforms"
+      default: "linux/amd64"
+      required: false
     signImage:
       description: (Deprecated) Enable Docker Image Signing (DCT)
       default: "false"
@@ -80,6 +84,7 @@ runs:
         dockerFileContext: ${{inputs.dockerFileContext}}
         generateSBOM: ${{ inputs.generateSBOM }}
         generateProvenance: ${{ inputs.generateProvenance }}
+        platforms: ${{ inputs.platforms }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
     - name: sign docker image

@@ -24,6 +24,10 @@ inputs:
     description: Generate provenance flag
     default: "true"
     required: false
+  platforms:
+    description: "Comma-separated target platforms"
+    default: "linux/amd64"
+    required: false
   DOCKER_USERNAME:
     description: Docker Registry username
     required: true
@@ -76,6 +80,7 @@ runs:
         annotations: ${{ steps.meta.outputs.annotations }}
         sbom: ${{ inputs.generateSBOM }}
         provenance: ${{ inputs.generateProvenance }}
+        platforms: ${{ inputs.platforms }}
     - name: Build Json array of tags for Docker Signing
       shell: bash
       id: additional-jsontags
