@@ -5,11 +5,11 @@ inputs:
     description: Docker Image
     required: true
   dockerImageTag:
-    description: Docker Image tag (comma separated for multiple inside table)
-    default: "['latest']"
+    description: Docker Image tag (JSON array or comma separated supported)
+    default: "latest"
   dockerImageDigest:
     description: Docker Image Digest     
-    required: false
+    required: true
   dockerRegistry:
     description: Docker registry (Default docker.io)
     default: "docker.io"
@@ -25,7 +25,7 @@ inputs:
     required: false
     default: "false"
   cosignOidcImage:
-    description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)    
+    description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided and cosignImage must be enabled)    
     required: false
     default: "false"
   COSIGN_PRIVATE_KEY:
@@ -34,9 +34,33 @@ inputs:
   COSIGN_PASSWORD:
     description: Cosign Signing Private Key Passphrase
     required: false
+
 runs:
   using: "composite"  
   steps:
+    - name: Validate Cosign configuration
+      if: ${{ inputs.cosignImage == 'true' || inputs.cosignOidcImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${{ inputs.dockerImageDigest }}" ]]; then
+          echo "dockerImageDigest is required for Cosign signing"
+          exit 1
+        fi
+
+        if [[ "${{ inputs.cosignOidcImage }}" == "true" && "${{ inputs.cosignImage }}" != "true" ]]; then
+          echo "cosignOidcImage requires cosignImage=true"
+          exit 1
+        fi
+
+        if [[ "${{ inputs.cosignImage }}" == "true" && "${{ inputs.cosignOidcImage }}" != "true" ]]; then
+          if [[ -z "${{ inputs.COSIGN_PRIVATE_KEY }}" ]]; then
+            echo "COSIGN_PRIVATE_KEY required for key-based signing"
+            exit 1
+          fi
+        fi
+
     - name: Log in to Docker Registry
       if: ${{ inputs.cosignImage == 'true' }}
       uses: docker/login-action@v3
@@ -44,38 +68,53 @@ runs:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
+
     - name: Install Cosign
       if: ${{ inputs.cosignImage == 'true' }}
       uses: sigstore/cosign-installer@v3.7.0
-    - name: Sign the published ghcr.io Docker image with Cosign
+
+    - name: Normalize image references
       if: ${{ inputs.cosignImage == 'true' }}
+      id: normalize
       shell: bash
       run: |
+        set -euo pipefail
+
+        RAW_TAGS='${{ inputs.dockerImageTag }}'
+
+        if echo "$RAW_TAGS" | jq -e . >/dev/null 2>&1; then
+          TAGS_LIST=$(echo "$RAW_TAGS" | jq -r '.[]')
+        else
+          TAGS_LIST=$(echo "$RAW_TAGS" | tr ',' '\n')
+        fi
+
         images=""
-        TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
-        for tag in ${TAGS_LIST}; do
-          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
-          docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST}
+        for tag in $TAGS_LIST; do
+          tag=$(echo "$tag" | xargs)
+          image="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${{ inputs.dockerImageDigest }}"
+          docker pull "$image"
+          images+="$image "
         done
-        cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${images}
+
+        echo "images=$images" >> $GITHUB_OUTPUT
+
+    - name: Sign Docker image(s) with Cosign key
+      if: ${{ inputs.cosignImage == 'true' && inputs.cosignOidcImage != 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${{ steps.normalize.outputs.images }}
       env:
         COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
         COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
-        DIGEST: ${{ inputs.dockerImageDigest }}
-        TAGS: ${{ inputs.dockerImageTag }}
-    - name: Sign the published ghcr.io Docker image with GitHub OIDC Token
-      if: ${{ inputs.cosignOidcImage == 'true' }}
+
+    - name: Sign Docker image(s) with GitHub OIDC Token
+      if: ${{ inputs.cosignImage == 'true' && inputs.cosignOidcImage == 'true' }}
       shell: bash
       run: |
-          images=""
-          TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
-          for tag in ${TAGS_LIST}; do
-            images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
-          done
-          cosign sign --yes ${images}
-      env:
-        DIGEST: ${{ inputs.dockerImageDigest }}
-        TAGS: ${{ inputs.dockerImageTag }}
+        set -euo pipefail
+        cosign sign --yes ${{ steps.normalize.outputs.images }}
+
 branding:
   icon: "anchor"
   color: "gray-dark"

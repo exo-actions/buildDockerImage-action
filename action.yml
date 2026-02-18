@@ -38,7 +38,7 @@ inputs:
       default: "false"
       required: false
     cosignOidcImage:
-      description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)
+      description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided and cosignImage must be enabled)
       default: "false"
       required: false
     attestImage:
@@ -69,11 +69,20 @@ inputs:
       required: false
     COSIGN_PASSWORD:
       description: Cosign Signing Private Key Passphrase
-      default: "false"
+      default: ""
       required: false 
 runs:
   using: "composite"  
   steps:
+    - name: Validate signing configuration
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${{ inputs.cosignOidcImage }}" == "true" && "${{ inputs.cosignImage }}" != "true" ]]; then
+          echo "cosignOidcImage requires cosignImage=true"
+          exit 1
+        fi
+
     - name: build docker image
       uses: exo-actions/buildDockerImage-action/build-and-push-image@v1
       id: build-docker-image
@@ -87,7 +96,9 @@ runs:
         platforms: ${{ inputs.platforms }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
+
     - name: sign docker image
+      if: inputs.signImage == 'true'
       uses: exo-actions/buildDockerImage-action/sign-image@v1 
       id: sign-docker-image      
       with:
@@ -100,7 +111,9 @@ runs:
         DOCKER_PRIVATE_KEY: ${{inputs.DOCKER_PRIVATE_KEY}}
         DOCKER_PRIVATE_KEY_PASSPHRASE: ${{inputs.DOCKER_PRIVATE_KEY_PASSPHRASE}}
         dockerImageTag: ${{steps.build-docker-image.outputs.tags}}
+
     - name: attest docker image
+      if: inputs.attestImage == 'true'
       uses: exo-actions/buildDockerImage-action/attest-image@v1 
       id: attest-docker-image
       with:
@@ -111,7 +124,9 @@ runs:
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
         attestImage: ${{inputs.attestImage}}
         attestImageRegistry: ${{inputs.attestImageRegistry}}
+
     - name: cosign docker image
+      if: inputs.cosignImage == 'true'
       uses: exo-actions/buildDockerImage-action/cosign-image@v1 
       id: cosign-docker-image
       with:
@@ -125,6 +140,7 @@ runs:
         cosignOidcImage: ${{inputs.cosignOidcImage}}
         COSIGN_PRIVATE_KEY: ${{inputs.COSIGN_PRIVATE_KEY}}
         COSIGN_PASSWORD: ${{inputs.COSIGN_PASSWORD}}
+
 branding:
   icon: "anchor"
   color: "gray-dark"

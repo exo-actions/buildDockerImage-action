@@ -1,8 +1,8 @@
 name: Build docker image
-description: 'This action is used to build docker images'
+description: 'Build and optionally push multi-platform Docker images with SBOM and provenance support'
 inputs:
   dockerImage:
-    description: Docker Image
+    description: Docker Image (e.g. org/app)
     required: true
   dockerImageTag:
     description: Docker Image tag (comma separated for multiple)
@@ -11,6 +11,10 @@ inputs:
   dockerFileContext:
     description: Dockerfile Context
     default: "."
+    required: false
+  dockerFile:
+    description: Dockerfile path
+    default: "Dockerfile"
     required: false
   dockerRegistry:
     description: Docker registry (Default docker.io)
@@ -28,69 +32,97 @@ inputs:
     description: "Comma-separated target platforms"
     default: "linux/amd64"
     required: false
+  push:
+    description: Push image to registry
+    default: "true"
+    required: false
+  buildArgs:
+    description: Multiline Docker build arguments
+    required: false
   DOCKER_USERNAME:
     description: Docker Registry username
     required: true
   DOCKER_PASSWORD:
-    description: Docker Registry user password
+    description: Docker Registry user password/token
     required: true
 outputs:
   tags:
-    description: 'pushed docker images tags'
+    description: 'pushed docker images tags (JSON array)'
     value: ${{ steps.additional-jsontags.outputs.tags}}
   digest:
     description: 'pushed docker images digest'
-    value: ${{ steps.get-digest.outputs.digest}}
+    value: ${{ steps.build.outputs.digest}}
 runs:
   using: "composite"
   steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+
     - name: Log in to Docker Registry
+      if: inputs.push == 'true'
       uses: docker/login-action@v3
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
         driver: docker-container
-    - name: Build list of additional tags
-      id: additional-tags
-      uses: actions/github-script@v7
-      with:
-        script: |
-          core.setOutput('tags', `${{ inputs.dockerImageTag }}`.split(",").join("\n"))
+
+    - name: Normalize Docker tags
+      id: normalize-tags
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "${{ inputs.dockerImageTag }}" \
+          | tr ',' '\n' \
+          | sed 's/^ *//;s/ *$//' \
+          | grep -v '^$' > tags.txt
+        cat tags.txt
+
     - name: Extract metadata (tags, labels) for Docker
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}
         tags: |
-          ${{ steps.additional-tags.outputs.tags }}
+          type=raw,value=${{ inputs.dockerImageTag }}
+          type=sha
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+        labels: |
+          org.opencontainers.image.source=${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+
     - name: Build and push Docker image to Registry
-      id: push
+      id: build
       uses: docker/build-push-action@v6
       with:
         context: ${{ inputs.dockerFileContext }}
-        push: true
+        file: ${{ inputs.dockerFile }}
+        push: ${{ inputs.push }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         annotations: ${{ steps.meta.outputs.annotations }}
         sbom: ${{ inputs.generateSBOM }}
-        provenance: ${{ inputs.generateProvenance }}
+        provenance: ${{ inputs.generateProvenance && 'mode=max' || 'false' }}
         platforms: ${{ inputs.platforms }}
+        build-args: ${{ inputs.buildArgs }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
     - name: Build Json array of tags for Docker Signing
       shell: bash
       id: additional-jsontags
       run: |
-        echo tags=$(echo ${{ inputs.dockerImageTag }} | sed 's/,/\n/g'| jq --raw-input | jq --slurp -c) >> $GITHUB_OUTPUT
-    - name: Get Digests for attest and cosign
-      shell: bash
-      id: get-digest
-      run: |
-        echo digest=$(echo ${{ steps.push.outputs.digest}}) >> $GITHUB_OUTPUT
+        set -euo pipefail
+        echo "${{ steps.meta.outputs.tags }}" \
+          | jq -R -s -c 'split("\n")[:-1]' \
+          | sed 's/^/tags=/' >> $GITHUB_OUTPUT
+
 branding:
   icon: "anchor"
   color: "gray-dark"

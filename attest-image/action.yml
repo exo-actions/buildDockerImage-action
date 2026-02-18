@@ -1,12 +1,12 @@
 name: Attest docker image
-description: 'This action is used to attest docker image'
+description: 'This action is used to attest docker images using GitHub Attestations'
 inputs:
   dockerImage:
     description: Docker Image
     required: true
   dockerImageDigest:
     description: Docker Image Digest     
-    required: false
+    required: true
   dockerRegistry:
     description: Docker registry (Default docker.io)
     default: "docker.io"
@@ -25,9 +25,20 @@ inputs:
     description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
     required: false
     default: "false"
+
 runs:
   using: "composite" 
   steps:
+    - name: Validate Attestation Configuration
+      if: ${{ inputs.attestImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "${{ inputs.dockerImageDigest }}" ]]; then
+          echo "dockerImageDigest is required for attestation"
+          exit 1
+        fi
+
     - name: Log in to Docker Registry
       if: ${{ inputs.attestImage == 'true' }}
       uses: docker/login-action@v3
@@ -35,11 +46,15 @@ runs:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
-    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
-      shell: bash
+
+    - name: Pull Docker image to attest
       if: ${{ inputs.attestImage == 'true' }}
-      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
-    - name: Attest the publised Docker image with Github
+      shell: bash
+      run: |
+        set -euo pipefail
+        docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
+
+    - name: Attest the published Docker image with GitHub
       if: ${{ inputs.attestImage == 'true' }}
       uses: actions/attest-build-provenance@v1
       id: attest
@@ -47,6 +62,7 @@ runs:
         subject-name: ${{ inputs.attestImageRegistry }}/${{ inputs.dockerImage }}
         subject-digest: ${{ inputs.dockerImageDigest }}
         push-to-registry: true
+
 branding:
   icon: "anchor"
   color: "gray-dark"
