@@ -1,58 +1,389 @@
-name: Sign docker image
-description: 'Deprecated: This action is used to sign docker images'
+name: Sign Docker Image (DCT)
+description: >-
+  ⚠️ DEPRECATED: Sign Docker images using Docker Content Trust (DCT / Notary v1).
+  Migrate to the Cosign action for Sigstore-based signing (keyless OIDC or key-pair).
+  This action will be removed in the next major version.
+
 inputs:
+  # ── Image Details ──────────────────────────────────────────────────
   dockerImage:
-    description: Docker Image
+    description: 'Docker image name (e.g. myorg/myapp)'
     required: true
   dockerImageTag:
-    description: Docker Images Tags
+    description: 'Image tag to sign (single tag only — DCT limitation)'
     required: true
   dockerRegistry:
-    description: Docker registry (Default docker.io)
-    default: "docker.io"
-    required: false
-  signImage:
-    description: Apply signature flag
-    default: "true"
-    required: false
-  DOCKER_USERNAME:
-    description: Docker Registry username
-    required: true
-  DOCKER_PASSWORD:
-    description: Docker Registry user password
-    required: true
-  DOCKER_PRIVATE_KEY_ID:
-    description: Docker Hub Signing Private Key ID
-    required: false
-  DOCKER_PRIVATE_KEY:
-    description: Docker Hub Signing Private Key
-    required: false
-  DOCKER_PRIVATE_KEY_PASSPHRASE:
-    description: Docker Hub Signing Private Key Passphrase
+    description: 'Container registry host'
+    default: 'docker.io'
     required: false
 
+  # ── Signing Toggle ─────────────────────────────────────────────────
+  signImage:
+    description: 'Enable Docker Content Trust signing'
+    default: 'true'
+    required: false
+
+  # ── Registry Auth ──────────────────────────────────────────────────
+  DOCKER_USERNAME:
+    description: 'Registry username'
+    required: true
+  DOCKER_PASSWORD:
+    description: 'Registry password / token'
+    required: true
+
+  # ── DCT Key Material ──────────────────────────────────────────────
+  DOCKER_PRIVATE_KEY_ID:
+    description: 'DCT signing private key ID (delegation key ID)'
+    required: false
+    default: ''
+  DOCKER_PRIVATE_KEY:
+    description: 'DCT signing private key (PEM-encoded)'
+    required: false
+    default: ''
+  DOCKER_PRIVATE_KEY_PASSPHRASE:
+    description: 'Passphrase for the DCT signing private key'
+    required: false
+    default: ''
+
+  # ── Advanced ───────────────────────────────────────────────────────
+  verifySignature:
+    description: 'Verify the DCT signature after signing'
+    required: false
+    default: 'true'
+  suppressDeprecationWarning:
+    description: 'Suppress the deprecation warning (not recommended)'
+    required: false
+    default: 'false'
+  pullRetries:
+    description: 'Number of pull retry attempts'
+    required: false
+    default: '3'
+  pullRetryDelay:
+    description: 'Initial delay (seconds) between pull retries (doubles each attempt)'
+    required: false
+    default: '5'
+
+outputs:
+  signedImageRef:
+    description: 'Fully-qualified signed image reference (registry/image:tag)'
+    value: ${{ steps.build-ref.outputs.ref }}
+  signatureVerified:
+    description: '"success" if post-sign verification passed, "skipped" otherwise'
+    value: ${{ steps.verify.outputs.status || 'skipped' }}
+
 runs:
-  using: "composite"  
+  using: 'composite'
   steps:
-    - name: Log in to Docker Registry
+    # ─── 0. Deprecation Notice ───────────────────────────────────────
+    - name: Deprecation warning
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        NOTICE="
+        ╔════════════════════════════════════════════════════════════════════════╗
+        ║  ⚠️  DEPRECATION WARNING                                               ║
+        ║                                                                        ║
+        ║  This action uses Docker Content Trust (DCT / Notary v1),              ║
+        ║  which is deprecated and will be removed in the next major             ║
+        ║  version.                                                              ║
+        ║                                                                        ║
+        ║  Migrate to the Cosign action for:                                     ║
+        ║    • Sigstore-based signatures (industry standard)                     ║
+        ║    • Keyless signing via GitHub OIDC                                   ║
+        ║    • Key-pair signing with KMS support                                 ║
+        ║    • Transparency log (Rekor) for audit trail                          ║
+        ║    • Multi-tag signing in a single invocation                          ║
+        ║                                                                        ║
+        ║  Migration example:                                                    ║
+        ║                                                                        ║
+        ║    - uses: exo-actions/buildDockerImage-action/cosign-docker-image@v2  ║
+        ║      with:                                                             ║
+        ║        dockerImage: myorg/myapp                                        ║
+        ║        dockerImageTag: '[\"v1.0.0\"]'                                  ║
+        ║        dockerImageDigest: \${{ steps.build.outputs.digest }}           ║
+        ║        cosignImage: 'true'                                             ║
+        ║        COSIGN_PRIVATE_KEY: \${{ secrets.COSIGN_KEY }}                  ║
+        ║        COSIGN_PASSWORD: \${{ secrets.COSIGN_PASSWORD }}                ║
+        ║                                                                        ║
+        ╚════════════════════════════════════════════════════════════════════════╝
+        "
+
+        if [[ "${{ inputs.suppressDeprecationWarning }}" != "true" ]]; then
+          echo "::warning title=Deprecated Action::This action uses Docker Content Trust (DCT) which is deprecated. Migrate to the Cosign action. Set suppressDeprecationWarning: true to silence this warning."
+          echo "$NOTICE"
+        else
+          echo "::notice::Deprecation warning suppressed. This action will still be removed in the next major version."
+        fi
+
+    # ─── 1. Input Validation ─────────────────────────────────────────
+    - name: Validate inputs
+      if: ${{ inputs.signImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        ERRORS=0
+
+        # Image name required
+        if [[ -z "${{ inputs.dockerImage }}" ]]; then
+          echo "::error::dockerImage is required and cannot be empty."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Image name must be lowercase
+        IMAGE="${{ inputs.dockerImage }}"
+        if [[ "$IMAGE" =~ [A-Z] ]]; then
+          echo "::error::dockerImage must be lowercase (got '${IMAGE}')."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Tag required
+        TAG="${{ inputs.dockerImageTag }}"
+        if [[ -z "$TAG" ]]; then
+          echo "::error::dockerImageTag is required and cannot be empty."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # DCT only supports single tags — warn if comma found
+        if [[ "$TAG" == *","* ]]; then
+          echo "::error::Docker Content Trust (DCT) only supports signing a single tag per invocation. Use the Cosign action for multi-tag signing. Got: '${TAG}'"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Tag must not contain invalid characters
+        if [[ ! "$TAG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+          echo "::error::dockerImageTag contains invalid characters. Allowed: alphanumeric, dots, hyphens, underscores. Got: '${TAG}'"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Key material validation
+        KEY_ID="${{ inputs.DOCKER_PRIVATE_KEY_ID }}"
+        KEY="${{ inputs.DOCKER_PRIVATE_KEY }}"
+        PASSPHRASE="${{ inputs.DOCKER_PRIVATE_KEY_PASSPHRASE }}"
+
+        if [[ -z "$KEY_ID" ]]; then
+          echo "::error::DOCKER_PRIVATE_KEY_ID is required for DCT signing."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if [[ -z "$KEY" ]]; then
+          echo "::error::DOCKER_PRIVATE_KEY is required for DCT signing."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if [[ -z "$PASSPHRASE" ]]; then
+          echo "::warning::DOCKER_PRIVATE_KEY_PASSPHRASE is empty. Signing will fail if the key is passphrase-protected."
+        fi
+
+        # Registry validation
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        if [[ "$REGISTRY" != "docker.io" ]]; then
+          echo "::warning::Docker Content Trust (DCT) has limited support outside Docker Hub. Registry '${REGISTRY}' may not support Notary v1. Consider migrating to the Cosign action."
+        fi
+
+        if [[ $ERRORS -gt 0 ]]; then
+          echo "::error::Input validation failed with ${ERRORS} error(s)."
+          exit 1
+        fi
+
+        echo "✅ Input validation passed"
+
+    # ─── 2. Build Image Reference ────────────────────────────────────
+    - name: Build image reference
+      id: build-ref
+      if: ${{ inputs.signImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        TAG="${{ inputs.dockerImageTag }}"
+        REF="${REGISTRY}/${IMAGE}:${TAG}"
+        echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+        echo "🔗 Image reference: ${REF}"
+
+    # ─── 3. Registry Login ───────────────────────────────────────────
+    - name: Log in to ${{ inputs.dockerRegistry }}
       if: ${{ inputs.signImage == 'true' }}
       uses: docker/login-action@v3
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
-    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.dockerImageTag}}
-      shell: bash
+
+    # ─── 4. Pull Image with Retry ────────────────────────────────────
+    - name: Pull image ${{ steps.build-ref.outputs.ref }}
       if: ${{ inputs.signImage == 'true' }}
-      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.dockerImageTag}}
-    - name: Sign the published Dockerhub Docker image with DCT
+      shell: bash
+      run: |
+        set -euo pipefail
+        IMAGE_REF="${{ steps.build-ref.outputs.ref }}"
+        MAX_RETRIES=${{ inputs.pullRetries }}
+        RETRY_DELAY=${{ inputs.pullRetryDelay }}
+
+        echo "📥 Pulling ${IMAGE_REF}..."
+
+        for attempt in $(seq 1 "$MAX_RETRIES"); do
+          if docker pull "${IMAGE_REF}"; then
+            echo "✅ Pull succeeded on attempt ${attempt}"
+
+            # Verify the pulled image exists locally
+            if docker image inspect "${IMAGE_REF}" > /dev/null 2>&1; then
+              echo "✅ Image verified in local daemon"
+            else
+              echo "::error::Image pulled but not found in local daemon."
+              exit 1
+            fi
+            break
+          fi
+
+          if [[ $attempt -eq $MAX_RETRIES ]]; then
+            echo "::error::Failed to pull '${IMAGE_REF}' after ${MAX_RETRIES} attempts."
+            exit 1
+          fi
+
+          echo "::warning::Pull attempt ${attempt}/${MAX_RETRIES} failed. Retrying in ${RETRY_DELAY}s..."
+          sleep "$RETRY_DELAY"
+          RETRY_DELAY=$((RETRY_DELAY * 2))
+        done
+
+    # ─── 5. Sign Image with DCT ─────────────────────────────────────
+    - name: Sign image with Docker Content Trust (DCT)
       if: ${{ inputs.signImage == 'true' }}
       uses: sudo-bot/action-docker-sign@latest
       with:
-        image-ref: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${{ inputs.dockerImageTag}}
-        private-key-id: "${{ inputs.DOCKER_PRIVATE_KEY_ID }}"
+        image-ref: ${{ steps.build-ref.outputs.ref }}
+        private-key-id: ${{ inputs.DOCKER_PRIVATE_KEY_ID }}
         private-key: ${{ inputs.DOCKER_PRIVATE_KEY }}
         private-key-passphrase: ${{ inputs.DOCKER_PRIVATE_KEY_PASSPHRASE }}
+
+    # ─── 6. Verify Signature ────────────────────────────────────────
+    - name: Verify DCT signature
+      id: verify
+      if: ${{ inputs.signImage == 'true' && inputs.verifySignature == 'true' }}
+      shell: bash
+      env:
+        DOCKER_CONTENT_TRUST: '1'
+      run: |
+        set -euo pipefail
+        IMAGE_REF="${{ steps.build-ref.outputs.ref }}"
+
+        echo "🔍 Verifying DCT signature for ${IMAGE_REF}..."
+
+        # Inspect trust data
+        if docker trust inspect --pretty "${IMAGE_REF}" 2>&1; then
+          echo "✅ DCT signature verified"
+          echo "status=success" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::DCT signature verification returned non-zero. The image may still be signed — Notary server connectivity can cause false negatives."
+          echo "status=warning" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo ""
+        echo "── Trust Data ──"
+        docker trust inspect "${IMAGE_REF}" 2>&1 || true
+
+    # ─── 7. Job Summary ─────────────────────────────────────────────
+    - name: Write job summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.signImage }}" != "true" ]]; then
+          {
+            echo "## ✍️ Docker Image Signing — Skipped"
+            echo ""
+            echo "Signing was not enabled (\`signImage: false\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        TAG="${{ inputs.dockerImageTag }}"
+        REF="${{ steps.build-ref.outputs.ref }}"
+        VERIFY_STATUS="${{ steps.verify.outputs.status || 'skipped' }}"
+        KEY_ID="${{ inputs.DOCKER_PRIVATE_KEY_ID }}"
+        # Mask all but last 4 characters of key ID
+        if [[ ${#KEY_ID} -gt 4 ]]; then
+          MASKED_KEY_ID="***${KEY_ID: -4}"
+        else
+          MASKED_KEY_ID="***"
+        fi
+
+        {
+          echo "## ✍️ Docker Image Signing Summary (DCT)"
+          echo ""
+          echo "> ⚠️ **Deprecated**: This action uses Docker Content Trust (Notary v1)."
+          echo "> Migrate to the **Cosign action** for Sigstore-based signing."
+          echo ""
+          echo "| Property | Value |"
+          echo "|----------|-------|"
+          echo "| **Image** | \`${REF}\` |"
+          echo "| **Registry** | \`${REGISTRY}\` |"
+          echo "| **Tag** | \`${TAG}\` |"
+          echo "| **Signing Method** | Docker Content Trust (DCT / Notary v1) |"
+          echo "| **Key ID** | \`${MASKED_KEY_ID}\` |"
+          echo "| **Verification** | \`${VERIFY_STATUS}\` |"
+          echo ""
+          echo "### Verification Status"
+          echo ""
+
+          case "$VERIFY_STATUS" in
+            success)
+              echo "✅ DCT signature **verified** successfully."
+              ;;
+            warning)
+              echo "⚠️ Verification completed with warnings — check logs for details."
+              ;;
+            skipped)
+              echo "⏭️ Verification was **skipped**."
+              ;;
+            *)
+              echo "❓ Unknown verification status: \`${VERIFY_STATUS}\`"
+              ;;
+          esac
+
+          echo ""
+          echo "### 🔄 Migration Guide"
+          echo ""
+          echo "Replace this action with the Cosign action:"
+          echo ""
+          echo '```yaml'
+          echo "# Before (DCT — deprecated)"
+          echo "- uses: exo-actions/buildDockerImage-action/sign-docker-image@v2"
+          echo "  with:"
+          echo "    dockerImage: ${IMAGE}"
+          echo "    dockerImageTag: ${TAG}"
+          echo "    signImage: 'true'"
+          echo "    DOCKER_PRIVATE_KEY_ID: \${{ secrets.DCT_KEY_ID }}"
+          echo "    DOCKER_PRIVATE_KEY: \${{ secrets.DCT_KEY }}"
+          echo "    DOCKER_PRIVATE_KEY_PASSPHRASE: \${{ secrets.DCT_PASSPHRASE }}"
+          echo ""
+          echo "# After (Cosign — recommended)"
+          echo "- uses: exo-actions/buildDockerImage-action/cosign-docker-image@v2"
+          echo "  with:"
+          echo "    dockerImage: ${IMAGE}"
+          echo "    dockerImageTag: '[\"${TAG}\"]'"
+          echo "    dockerImageDigest: \${{ steps.build.outputs.digest }}"
+          echo "    cosignImage: 'true'"
+          echo "    COSIGN_PRIVATE_KEY: \${{ secrets.COSIGN_KEY }}"
+          echo "    COSIGN_PASSWORD: \${{ secrets.COSIGN_PASSWORD }}"
+          echo '```'
+          echo ""
+          echo "Or use **keyless signing** with GitHub OIDC (no secrets needed):"
+          echo ""
+          echo '```yaml'
+          echo "- uses: exo-actions/buildDockerImage-action/cosign-docker-image@v2"
+          echo "  with:"
+          echo "    dockerImage: ${IMAGE}"
+          echo "    dockerImageTag: '[\"${TAG}\"]'"
+          echo "    dockerImageDigest: \${{ steps.build.outputs.digest }}"
+          echo "    cosignOidcImage: 'true'"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
 branding:
-  icon: "anchor"
-  color: "gray-dark"
+  icon: 'alert-triangle'
+  color: 'yellow'

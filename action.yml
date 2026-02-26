@@ -1,130 +1,631 @@
-name: Create publish, sign, cosign and attest docker image
-description: this action allow to create publish, sign, cosign and attest docker image. The sign, cosign and attest are optionnals
+name: Build, Publish, Sign & Attest Docker Image
+description: >-
+  End-to-end Docker image pipeline: build & push, optionally sign (DCT or Cosign),
+  and attest (SLSA provenance & SBOM). Signing and attestation are opt-in.
 author: 'eXo Platform'
+
 inputs:
-    dockerImage:
-      description: Docker Image
-      required: true
-    dockerImageTag:
-      description: Docker Image tag (comma separated for multiple)
-      default: "latest"
-      required: false
-    dockerFileContext:
-      description: Dockerfile Context
-      default: "."
-      required: false
-    dockerRegistry:
-      description: Docker registry (Default docker.io)
-      default: "docker.io"
-      required: false
-    generateSBOM:
-      description: Generate SBOM flag
-      default: "true"
-      required: false
-    generateProvenance:
-      description: Generate provenance flag
-      default: "true"
-      required: false
-    platforms:
-      description: "Comma-separated target platforms"
-      default: "linux/amd64"
-      required: false
-    signImage:
-      description: (Deprecated) Enable Docker Image Signing (DCT)
-      default: "false"
-      required: false
-    cosignImage:
-      description: Enable Docker Image Signing (Cosign)
-      default: "false"
-      required: false
-    cosignOidcImage:
-      description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)
-      default: "false"
-      required: false
-    attestImage:
-      description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
-      default: "false"
-      required: false
-    attestImageRegistry:
-      description: Docker Image Registry for Attestation by Github (default docker.io)
-      required: false
-      default: "docker.io"
-    DOCKER_USERNAME:
-      description: Docker Registry username
-      required: true
-    DOCKER_PASSWORD:
-      description: Docker Registry user password
-      required: true
-    DOCKER_PRIVATE_KEY_ID:
-      description: Docker Hub Signing Private Key ID
-      required: false
-    DOCKER_PRIVATE_KEY:
-      description: Docker Hub Signing Private Key
-      required: false
-    DOCKER_PRIVATE_KEY_PASSPHRASE:
-      description: Docker Hub Signing Private Key Passphrase
-      required: false
-    COSIGN_PRIVATE_KEY:
-      description: Cosign Signing Private Key
-      required: false
-    COSIGN_PASSWORD:
-      description: Cosign Signing Private Key Passphrase
-      default: "false"
-      required: false 
+  # ── Image Details ──────────────────────────────────────────────────
+  dockerImage:
+    description: 'Docker image name (e.g. myorg/myapp)'
+    required: true
+  dockerImageTag:
+    description: 'Comma-separated tags to apply (e.g. latest,v1.0.0,sha-abc1234)'
+    default: 'latest'
+    required: false
+  dockerRegistry:
+    description: 'Container registry host'
+    default: 'docker.io'
+    required: false
+
+  # ── Build Configuration ────────────────────────────────────────────
+  dockerFileContext:
+    description: 'Build context path'
+    default: '.'
+    required: false
+  dockerFilePath:
+    description: 'Path to Dockerfile relative to context (e.g. docker/Dockerfile.prod)'
+    default: ''
+    required: false
+  target:
+    description: 'Multi-stage build target stage'
+    default: ''
+    required: false
+  buildArgs:
+    description: 'Newline-separated build-time variables (e.g. GO_VERSION=1.22)'
+    default: ''
+    required: false
+  buildSecrets:
+    description: 'Newline-separated build secrets'
+    default: ''
+    required: false
+  platforms:
+    description: 'Comma-separated target platforms'
+    default: 'linux/amd64'
+    required: false
+
+  # ── Supply-chain Security ──────────────────────────────────────────
+  generateSBOM:
+    description: 'Attach SBOM attestation during build'
+    default: 'true'
+    required: false
+  generateProvenance:
+    description: 'Attach SLSA provenance during build'
+    default: 'true'
+    required: false
+
+  # ── Caching ────────────────────────────────────────────────────────
+  cacheEnabled:
+    description: 'Enable Docker layer caching'
+    default: 'true'
+    required: false
+  cacheFrom:
+    description: 'Custom cache source (overrides default registry cache)'
+    default: ''
+    required: false
+  cacheTo:
+    description: 'Custom cache destination (overrides default registry cache)'
+    default: ''
+    required: false
+
+  # ── Registry Auth ──────────────────────────────────────────────────
+  DOCKER_USERNAME:
+    description: 'Registry username'
+    required: true
+  DOCKER_PASSWORD:
+    description: 'Registry password / token'
+    required: true
+
+  # ── DCT Signing (Deprecated) ──────────────────────────────────────
+  signImage:
+    description: '⚠️ DEPRECATED — Enable Docker Content Trust (DCT) signing. Migrate to Cosign.'
+    default: 'false'
+    required: false
+  DOCKER_PRIVATE_KEY_ID:
+    description: '⚠️ DEPRECATED — DCT signing private key ID'
+    required: false
+    default: ''
+  DOCKER_PRIVATE_KEY:
+    description: '⚠️ DEPRECATED — DCT signing private key (PEM)'
+    required: false
+    default: ''
+  DOCKER_PRIVATE_KEY_PASSPHRASE:
+    description: '⚠️ DEPRECATED — DCT signing private key passphrase'
+    required: false
+    default: ''
+
+  # ── Cosign Signing ─────────────────────────────────────────────────
+  cosignImage:
+    description: 'Enable Cosign key-pair signing'
+    default: 'false'
+    required: false
+  cosignOidcImage:
+    description: >-
+      Enable Cosign keyless signing via GitHub OIDC
+      (requires `permissions: id-token: write`)
+    default: 'false'
+    required: false
+  COSIGN_PRIVATE_KEY:
+    description: 'Cosign signing private key (PEM or KMS URI)'
+    required: false
+    default: ''
+  COSIGN_PASSWORD:
+    description: 'Cosign signing private key passphrase'
+    required: false
+    default: ''
+  COSIGN_PUBLIC_KEY:
+    description: 'Cosign public key for post-sign verification'
+    required: false
+    default: ''
+  cosignAnnotations:
+    description: 'Comma-separated key=value annotations for Cosign signatures'
+    required: false
+    default: ''
+
+  # ── Attestation ────────────────────────────────────────────────────
+  attestImage:
+    description: >-
+      Enable GitHub build-provenance attestation
+      (requires `permissions: attestations: write, id-token: write`)
+    default: 'false'
+    required: false
+  attestImageRegistry:
+    description: 'Registry used as subject-name prefix in attestation. Defaults to dockerRegistry.'
+    required: false
+    default: ''
+  attestSBOM:
+    description: 'Enable SBOM attestation via GitHub (in addition to build provenance)'
+    required: false
+    default: 'false'
+  sbomFilePath:
+    description: 'Path to pre-generated SBOM file. If empty, auto-generated via Anchore.'
+    required: false
+    default: ''
+
+  # ── Verification ───────────────────────────────────────────────────
+  verifySignatures:
+    description: 'Verify all signatures and attestations after creation'
+    required: false
+    default: 'true'
+
+  # ── Advanced ───────────────────────────────────────────────────────
+  cosignVersion:
+    description: 'Cosign version to install'
+    required: false
+    default: 'v2.4.1'
+  githubToken:
+    description: 'GitHub token for attestation (defaults to GITHUB_TOKEN)'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  # ── Build Outputs ──────────────────────────────────────────────────
+  tags:
+    description: 'JSON array of pushed image tags'
+    value: ${{ steps.build-docker-image.outputs.tags }}
+  digest:
+    description: 'Image digest (sha256:…)'
+    value: ${{ steps.build-docker-image.outputs.digest }}
+  metadata:
+    description: 'Full build metadata JSON'
+    value: ${{ steps.build-docker-image.outputs.metadata }}
+  imageid:
+    description: 'Image ID'
+    value: ${{ steps.build-docker-image.outputs.imageid }}
+  fullImageRef:
+    description: 'Primary fully-qualified image reference with digest'
+    value: ${{ steps.build-docker-image.outputs.fullImageRef }}
+
+  # ── Signing Outputs ────────────────────────────────────────────────
+  cosignSignedImages:
+    description: 'Space-separated list of Cosign-signed image references'
+    value: ${{ steps.cosign-docker-image.outputs.signedImages || '' }}
+  dctSignedImageRef:
+    description: 'DCT-signed image reference (deprecated)'
+    value: ${{ steps.sign-docker-image.outputs.signedImageRef || '' }}
+
+  # ── Attestation Outputs ────────────────────────────────────────────
+  provenanceBundleId:
+    description: 'Bundle ID of the provenance attestation'
+    value: ${{ steps.attest-docker-image.outputs.provenanceBundleId || '' }}
+  sbomBundleId:
+    description: 'Bundle ID of the SBOM attestation'
+    value: ${{ steps.attest-docker-image.outputs.sbomBundleId || '' }}
+
+  # ── Pipeline Status ────────────────────────────────────────────────
+  pipelineStatus:
+    description: 'JSON object with status of each pipeline stage'
+    value: ${{ steps.pipeline-status.outputs.status }}
+
 runs:
-  using: "composite"  
+  using: 'composite'
   steps:
-    - name: build docker image
-      uses: exo-actions/buildDockerImage-action/build-and-push-image@v1
+    # ─── 0. Pipeline Validation ──────────────────────────────────────
+    - name: Validate pipeline configuration
+      id: validate
+      shell: bash
+      run: |
+        set -euo pipefail
+        ERRORS=0
+        WARNINGS=0
+
+        echo "🔍 Validating pipeline configuration..."
+        echo ""
+
+        # ── Image name ──
+        IMAGE="${{ inputs.dockerImage }}"
+        if [[ -z "$IMAGE" ]]; then
+          echo "::error::dockerImage is required."
+          ERRORS=$((ERRORS + 1))
+        elif [[ "$IMAGE" =~ [A-Z] ]]; then
+          echo "::error::dockerImage must be lowercase (got '${IMAGE}')."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # ── Tags ──
+        TAGS="${{ inputs.dockerImageTag }}"
+        if [[ -z "$TAGS" ]]; then
+          echo "::error::dockerImageTag cannot be empty."
+          ERRORS=$((ERRORS + 1))
+        elif [[ "$TAGS" =~ \  ]]; then
+          echo "::error::dockerImageTag must be comma-separated with no spaces (got '${TAGS}')."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # ── DCT + Cosign conflict ──
+        SIGN="${{ inputs.signImage }}"
+        COSIGN="${{ inputs.cosignImage }}"
+        COSIGN_OIDC="${{ inputs.cosignOidcImage }}"
+
+        if [[ "$COSIGN" == "true" && "$COSIGN_OIDC" == "true" ]]; then
+          echo "::error::cosignImage and cosignOidcImage are mutually exclusive. Enable only one."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if [[ "$SIGN" == "true" && ("$COSIGN" == "true" || "$COSIGN_OIDC" == "true") ]]; then
+          echo "::warning::Both DCT (signImage) and Cosign signing are enabled. DCT is deprecated — consider disabling signImage."
+          WARNINGS=$((WARNINGS + 1))
+        fi
+
+        # ── DCT deprecation ──
+        if [[ "$SIGN" == "true" ]]; then
+          echo "::warning::signImage uses Docker Content Trust (DCT) which is deprecated. Migrate to cosignImage or cosignOidcImage."
+          WARNINGS=$((WARNINGS + 1))
+
+          if [[ -z "${{ inputs.DOCKER_PRIVATE_KEY_ID }}" ]]; then
+            echo "::error::DOCKER_PRIVATE_KEY_ID is required when signImage is enabled."
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [[ -z "${{ inputs.DOCKER_PRIVATE_KEY }}" ]]; then
+            echo "::error::DOCKER_PRIVATE_KEY is required when signImage is enabled."
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # DCT only supports single tags
+          if [[ "$TAGS" == *","* ]]; then
+            echo "::warning::DCT signing only supports a single tag. Only the first tag will be DCT-signed. Use Cosign for multi-tag signing."
+            WARNINGS=$((WARNINGS + 1))
+          fi
+        fi
+
+        # ── Cosign key-pair validation ──
+        if [[ "$COSIGN" == "true" ]]; then
+          if [[ -z "${{ inputs.COSIGN_PRIVATE_KEY }}" ]]; then
+            echo "::error::COSIGN_PRIVATE_KEY is required when cosignImage is enabled."
+            ERRORS=$((ERRORS + 1))
+          fi
+        fi
+
+        # ── Attestation validation ──
+        if [[ "${{ inputs.attestImage }}" == "true" ]]; then
+          echo "::notice::Attestation requires 'permissions: attestations: write, id-token: write' on the calling workflow."
+        fi
+
+        if [[ "$COSIGN_OIDC" == "true" ]]; then
+          echo "::notice::Keyless Cosign signing requires 'permissions: id-token: write' on the calling workflow."
+        fi
+
+        # ── Platform validation ──
+        PLATFORMS="${{ inputs.platforms }}"
+        for platform in $(echo "$PLATFORMS" | tr ',' ' '); do
+          if [[ ! "$platform" =~ ^[a-z]+/[a-z0-9]+(/v[0-9]+)?$ ]]; then
+            echo "::error::Invalid platform format '${platform}'. Expected os/arch (e.g. linux/amd64)."
+            ERRORS=$((ERRORS + 1))
+          fi
+        done
+
+        # ── Dockerfile existence ──
+        CONTEXT="${{ inputs.dockerFileContext }}"
+        DOCKERFILE="${{ inputs.dockerFilePath }}"
+        if [[ -n "$DOCKERFILE" && ! -f "$DOCKERFILE" ]]; then
+          echo "::error::Dockerfile not found at '${DOCKERFILE}'."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # ── SBOM file existence ──
+        SBOM_PATH="${{ inputs.sbomFilePath }}"
+        if [[ -n "$SBOM_PATH" && ! -f "$SBOM_PATH" ]]; then
+          echo "::error::SBOM file not found at '${SBOM_PATH}'."
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # ── Summary ──
+        echo ""
+        if [[ $ERRORS -gt 0 ]]; then
+          echo "::error::Pipeline validation failed with ${ERRORS} error(s) and ${WARNINGS} warning(s)."
+          exit 1
+        fi
+
+        echo "✅ Pipeline validation passed (${WARNINGS} warning(s))"
+
+        # ── Feature flags for summary ──
+        FEATURES=""
+        [[ "${{ inputs.generateSBOM }}" == "true" ]]        && FEATURES+="sbom,"
+        [[ "${{ inputs.generateProvenance }}" == "true" ]]   && FEATURES+="provenance,"
+        [[ "$SIGN" == "true" ]]                              && FEATURES+="dct,"
+        [[ "$COSIGN" == "true" ]]                            && FEATURES+="cosign-keypair,"
+        [[ "$COSIGN_OIDC" == "true" ]]                       && FEATURES+="cosign-oidc,"
+        [[ "${{ inputs.attestImage }}" == "true" ]]          && FEATURES+="attest-provenance,"
+        [[ "${{ inputs.attestSBOM }}" == "true" ]]           && FEATURES+="attest-sbom,"
+        [[ "${{ inputs.cacheEnabled }}" == "true" ]]         && FEATURES+="cache,"
+
+        # Remove trailing comma
+        FEATURES="${FEATURES%,}"
+        echo "features=${FEATURES}" >> "$GITHUB_OUTPUT"
+        echo "📋 Enabled features: ${FEATURES}"
+
+    # ─── 1. Build & Push ─────────────────────────────────────────────
+    - name: '🏗️ Build & push Docker image'
+      uses: exo-actions/buildDockerImage-action/build-and-push-image@v2
       id: build-docker-image
       with:
-        dockerImage: ${{inputs.dockerImage}}
+        dockerImage: ${{ inputs.dockerImage }}
         dockerImageTag: ${{ inputs.dockerImageTag }}
-        dockerRegistry: ${{inputs.dockerRegistry}} 
-        dockerFileContext: ${{inputs.dockerFileContext}}
+        dockerRegistry: ${{ inputs.dockerRegistry }}
+        dockerFileContext: ${{ inputs.dockerFileContext }}
+        dockerFilePath: ${{ inputs.dockerFilePath }}
+        target: ${{ inputs.target }}
+        buildArgs: ${{ inputs.buildArgs }}
+        buildSecrets: ${{ inputs.buildSecrets }}
         generateSBOM: ${{ inputs.generateSBOM }}
         generateProvenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
-        DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
-        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
-    - name: sign docker image
-      uses: exo-actions/buildDockerImage-action/sign-image@v1 
-      id: sign-docker-image      
-      with:
-        dockerImage: ${{inputs.dockerImage}} 
-        dockerRegistry: ${{inputs.dockerRegistry}}
-        signImage: ${{inputs.signImage}}
+        cacheEnabled: ${{ inputs.cacheEnabled }}
+        cacheFrom: ${{ inputs.cacheFrom }}
+        cacheTo: ${{ inputs.cacheTo }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
-        DOCKER_PRIVATE_KEY_ID: ${{inputs.DOCKER_PRIVATE_KEY_ID}}
-        DOCKER_PRIVATE_KEY: ${{inputs.DOCKER_PRIVATE_KEY}}
-        DOCKER_PRIVATE_KEY_PASSPHRASE: ${{inputs.DOCKER_PRIVATE_KEY_PASSPHRASE}}
-        dockerImageTag: ${{steps.build-docker-image.outputs.tags}}
-    - name: attest docker image
-      uses: exo-actions/buildDockerImage-action/attest-image@v1 
-      id: attest-docker-image
+
+    # ─── 2. Validate Build Output ────────────────────────────────────
+    - name: Validate build outputs
+      id: validate-build
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        DIGEST="${{ steps.build-docker-image.outputs.digest }}"
+        TAGS="${{ steps.build-docker-image.outputs.tags }}"
+
+        echo "📋 Build outputs:"
+        echo "   Digest: ${DIGEST}"
+        echo "   Tags:   ${TAGS}"
+
+        if [[ -z "$DIGEST" ]]; then
+          echo "::error::Build did not produce a digest. Signing and attestation cannot proceed."
+          exit 1
+        fi
+
+        if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          echo "::error::Build produced an invalid digest format: '${DIGEST}'."
+          exit 1
+        fi
+
+        if [[ -z "$TAGS" ]]; then
+          echo "::error::Build did not produce tags output."
+          exit 1
+        fi
+
+        # Validate tags is valid JSON array
+        if ! echo "$TAGS" | jq -e 'type == "array"' > /dev/null 2>&1; then
+          echo "::error::Build tags output is not a valid JSON array: '${TAGS}'."
+          exit 1
+        fi
+
+        echo "✅ Build outputs validated"
+
+    # ─── 3. DCT Signing (Deprecated) ────────────────────────────────
+    - name: '✍️ Sign image with DCT (deprecated)'
+      if: ${{ inputs.signImage == 'true' }}
+      uses: exo-actions/buildDockerImage-action/sign-image@v2
+      id: sign-docker-image
       with:
-        dockerImage: ${{inputs.dockerImage}} 
-        dockerImageDigest: ${{ steps.build-docker-image.outputs.digest }}
-        dockerRegistry: ${{inputs.dockerRegistry}}
+        dockerImage: ${{ inputs.dockerImage }}
+        dockerRegistry: ${{ inputs.dockerRegistry }}
+        signImage: ${{ inputs.signImage }}
+        # DCT only supports single tag — extract the first one
+        dockerImageTag: ${{ fromJSON(steps.build-docker-image.outputs.tags)[0] }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
-        attestImage: ${{inputs.attestImage}}
-        attestImageRegistry: ${{inputs.attestImageRegistry}}
-    - name: cosign docker image
-      uses: exo-actions/buildDockerImage-action/cosign-image@v1 
+        DOCKER_PRIVATE_KEY_ID: ${{ inputs.DOCKER_PRIVATE_KEY_ID }}
+        DOCKER_PRIVATE_KEY: ${{ inputs.DOCKER_PRIVATE_KEY }}
+        DOCKER_PRIVATE_KEY_PASSPHRASE: ${{ inputs.DOCKER_PRIVATE_KEY_PASSPHRASE }}
+        verifySignature: ${{ inputs.verifySignatures }}
+
+    # ─── 4. Cosign Signing ───────────────────────────────────────────
+    - name: '🔏 Sign image with Cosign'
+      if: ${{ inputs.cosignImage == 'true' || inputs.cosignOidcImage == 'true' }}
+      uses: exo-actions/buildDockerImage-action/cosign-image@v2
       id: cosign-docker-image
       with:
-        dockerImage: ${{inputs.dockerImage}}
-        dockerImageTag: ${{ steps.build-docker-image.outputs.tags }} 
+        dockerImage: ${{ inputs.dockerImage }}
+        dockerImageTag: ${{ steps.build-docker-image.outputs.tags }}
         dockerImageDigest: ${{ steps.build-docker-image.outputs.digest }}
-        dockerRegistry: ${{inputs.dockerRegistry}} 
+        dockerRegistry: ${{ inputs.dockerRegistry }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
-        cosignImage: ${{inputs.cosignImage}}
-        cosignOidcImage: ${{inputs.cosignOidcImage}}
-        COSIGN_PRIVATE_KEY: ${{inputs.COSIGN_PRIVATE_KEY}}
-        COSIGN_PASSWORD: ${{inputs.COSIGN_PASSWORD}}
+        cosignImage: ${{ inputs.cosignImage }}
+        cosignOidcImage: ${{ inputs.cosignOidcImage }}
+        COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
+        COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
+        COSIGN_PUBLIC_KEY: ${{ inputs.COSIGN_PUBLIC_KEY }}
+        cosignVersion: ${{ inputs.cosignVersion }}
+        annotations: ${{ inputs.cosignAnnotations }}
+        verifySigning: ${{ inputs.verifySignatures }}
+
+    # ─── 5. Attestation ─────────────────────────────────────────────
+    - name: '📝 Attest image'
+      if: ${{ inputs.attestImage == 'true' }}
+      uses: exo-actions/buildDockerImage-action/attest-image@v2
+      id: attest-docker-image
+      with:
+        dockerImage: ${{ inputs.dockerImage }}
+        dockerImageDigest: ${{ steps.build-docker-image.outputs.digest }}
+        dockerRegistry: ${{ inputs.dockerRegistry }}
+        DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
+        attestImage: ${{ inputs.attestImage }}
+        attestImageRegistry: ${{ inputs.attestImageRegistry }}
+        attestProvenance: 'true'
+        attestSBOM: ${{ inputs.attestSBOM }}
+        sbomFilePath: ${{ inputs.sbomFilePath }}
+        verifyAttestation: ${{ inputs.verifySignatures }}
+        githubToken: ${{ inputs.githubToken }}
+
+    # ─── 6. Pipeline Status ─────────────────────────────────────────
+    - name: Compute pipeline status
+      id: pipeline-status
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Determine step outcomes
+        BUILD_STATUS="${{ steps.build-docker-image.outcome || 'skipped' }}"
+        SIGN_STATUS="${{ steps.sign-docker-image.outcome || 'skipped' }}"
+        COSIGN_STATUS="${{ steps.cosign-docker-image.outcome || 'skipped' }}"
+        ATTEST_STATUS="${{ steps.attest-docker-image.outcome || 'skipped' }}"
+
+        STATUS_JSON=$(jq -n \
+          --arg build "$BUILD_STATUS" \
+          --arg dct "$SIGN_STATUS" \
+          --arg cosign "$COSIGN_STATUS" \
+          --arg attest "$ATTEST_STATUS" \
+          '{build: $build, dct_signing: $dct, cosign_signing: $cosign, attestation: $attest}')
+
+        echo "status=${STATUS_JSON}" >> "$GITHUB_OUTPUT"
+        echo "📊 Pipeline status: ${STATUS_JSON}"
+
+    # ─── 7. Unified Job Summary ─────────────────────────────────────
+    - name: Write unified pipeline summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        DIGEST="${{ steps.build-docker-image.outputs.digest || 'N/A' }}"
+        IMAGE_ID="${{ steps.build-docker-image.outputs.imageid || 'N/A' }}"
+        PLATFORMS="${{ inputs.platforms }}"
+        TAGS="${{ inputs.dockerImageTag }}"
+
+        # Step outcomes
+        BUILD_STATUS="${{ steps.build-docker-image.outcome || 'skipped' }}"
+        SIGN_STATUS="${{ steps.sign-docker-image.outcome || 'skipped' }}"
+        COSIGN_STATUS="${{ steps.cosign-docker-image.outcome || 'skipped' }}"
+        ATTEST_STATUS="${{ steps.attest-docker-image.outcome || 'skipped' }}"
+
+        # Status emoji mapper
+        status_emoji() {
+          case "$1" in
+            success)  echo "✅" ;;
+            failure)  echo "❌" ;;
+            skipped)  echo "⏭️" ;;
+            cancelled) echo "🚫" ;;
+            *)        echo "❓" ;;
+          esac
+        }
+
+        # Overall pipeline status
+        if [[ "$BUILD_STATUS" == "success" ]]; then
+          OVERALL="✅ Pipeline Succeeded"
+        elif [[ "$BUILD_STATUS" == "failure" ]]; then
+          OVERALL="❌ Pipeline Failed (Build)"
+        else
+          OVERALL="⚠️ Pipeline Incomplete"
+        fi
+
+        {
+          echo "## 🐳 Docker Image Pipeline Summary"
+          echo ""
+          echo "### ${OVERALL}"
+          echo ""
+          echo "| Property | Value |"
+          echo "|----------|-------|"
+          echo "| **Registry** | \`${REGISTRY}\` |"
+          echo "| **Image** | \`${IMAGE}\` |"
+          echo "| **Digest** | \`${DIGEST}\` |"
+          echo "| **Image ID** | \`${IMAGE_ID}\` |"
+          echo "| **Platforms** | \`${PLATFORMS}\` |"
+          echo "| **Repository** | [\`${{ github.repository }}\`](${{ github.server_url }}/${{ github.repository }}) |"
+          echo "| **Workflow** | \`${{ github.workflow }}\` |"
+          echo "| **Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          echo "| **Commit** | [\`${GITHUB_SHA:0:7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) |"
+          echo "| **Actor** | \`${{ github.actor }}\` |"
+          echo ""
+
+          echo "### 🏷️ Tags"
+          echo ""
+          for tag in $(echo "$TAGS" | tr ',' ' '); do
+            if [[ "$DIGEST" != "N/A" ]]; then
+              echo "- \`${REGISTRY}/${IMAGE}:${tag}@${DIGEST}\`"
+            else
+              echo "- \`${REGISTRY}/${IMAGE}:${tag}\`"
+            fi
+          done
+          echo ""
+
+          echo "### 📊 Pipeline Stages"
+          echo ""
+          echo "| Stage | Status | Details |"
+          echo "|-------|--------|---------|"
+          echo "| 🏗️ **Build & Push** | $(status_emoji "$BUILD_STATUS") \`${BUILD_STATUS}\` | SBOM: \`${{ inputs.generateSBOM }}\`, Provenance: \`${{ inputs.generateProvenance }}\`, Cache: \`${{ inputs.cacheEnabled }}\` |"
+
+          if [[ "${{ inputs.signImage }}" == "true" ]]; then
+            echo "| ✍️ **DCT Signing** | $(status_emoji "$SIGN_STATUS") \`${SIGN_STATUS}\` | ⚠️ Deprecated — migrate to Cosign |"
+          fi
+
+          if [[ "${{ inputs.cosignImage }}" == "true" ]]; then
+            echo "| 🔏 **Cosign (Key-pair)** | $(status_emoji "$COSIGN_STATUS") \`${COSIGN_STATUS}\` | Version: \`${{ inputs.cosignVersion }}\` |"
+          elif [[ "${{ inputs.cosignOidcImage }}" == "true" ]]; then
+            echo "| 🔏 **Cosign (OIDC Keyless)** | $(status_emoji "$COSIGN_STATUS") \`${COSIGN_STATUS}\` | Version: \`${{ inputs.cosignVersion }}\` |"
+          fi
+
+          if [[ "${{ inputs.attestImage }}" == "true" ]]; then
+            PROV_BUNDLE="${{ steps.attest-docker-image.outputs.provenanceBundleId || 'N/A' }}"
+            SBOM_BUNDLE="${{ steps.attest-docker-image.outputs.sbomBundleId || 'N/A' }}"
+            echo "| 📝 **Attestation** | $(status_emoji "$ATTEST_STATUS") \`${ATTEST_STATUS}\` | Provenance: \`${PROV_BUNDLE}\`, SBOM: \`${SBOM_BUNDLE}\` |"
+          fi
+
+          echo ""
+          echo "### 🔐 Security Features"
+          echo ""
+          FEATURES="${{ steps.validate.outputs.features }}"
+          if [[ -n "$FEATURES" ]]; then
+            echo "| Feature | Status |"
+            echo "|---------|--------|"
+            for feature in $(echo "$FEATURES" | tr ',' ' '); do
+              case "$feature" in
+                sbom)              echo "| SBOM (build-time) | ✅ Enabled |" ;;
+                provenance)        echo "| SLSA Provenance (build-time) | ✅ Enabled |" ;;
+                dct)               echo "| Docker Content Trust | ⚠️ Enabled (deprecated) |" ;;
+                cosign-keypair)    echo "| Cosign Key-pair Signing | ✅ Enabled |" ;;
+                cosign-oidc)       echo "| Cosign OIDC Keyless Signing | ✅ Enabled |" ;;
+                attest-provenance) echo "| GitHub Provenance Attestation | ✅ Enabled |" ;;
+                attest-sbom)       echo "| GitHub SBOM Attestation | ✅ Enabled |" ;;
+                cache)             echo "| Layer Caching | ✅ Enabled |" ;;
+              esac
+            done
+          else
+            echo "No optional security features enabled."
+          fi
+
+          echo ""
+          echo "### 🔍 Verify Locally"
+          echo ""
+
+          if [[ "$DIGEST" != "N/A" ]]; then
+            echo '```bash'
+            echo "# Pull by digest (immutable)"
+            echo "docker pull ${REGISTRY}/${IMAGE}@${DIGEST}"
+            echo ""
+
+            if [[ "${{ inputs.cosignImage }}" == "true" || "${{ inputs.cosignOidcImage }}" == "true" ]]; then
+              FIRST_TAG=$(echo "$TAGS" | cut -d',' -f1)
+              if [[ "${{ inputs.cosignOidcImage }}" == "true" ]]; then
+                echo "# Verify Cosign signature (keyless)"
+                echo "cosign verify \\"
+                echo "  --certificate-identity-regexp '.*' \\"
+                echo "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\"
+                echo "  ${REGISTRY}/${IMAGE}:${FIRST_TAG}@${DIGEST}"
+              else
+                echo "# Verify Cosign signature (key-pair)"
+                echo "cosign verify --key cosign.pub ${REGISTRY}/${IMAGE}:${FIRST_TAG}@${DIGEST}"
+              fi
+              echo ""
+            fi
+
+            if [[ "${{ inputs.attestImage }}" == "true" ]]; then
+              echo "# Verify GitHub attestation"
+              echo "gh attestation verify oci://${REGISTRY}/${IMAGE}@${DIGEST} \\"
+              echo "  --owner ${{ github.repository_owner }}"
+            fi
+
+            echo '```'
+          fi
+
+        } >> "$GITHUB_STEP_SUMMARY"
+
 branding:
-  icon: "anchor"
-  color: "gray-dark"
+  icon: 'layers'
+  color: 'blue'
