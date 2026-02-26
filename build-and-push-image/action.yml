@@ -1,96 +1,425 @@
-name: Build docker image
-description: 'This action is used to build docker images'
+name: Build Docker Image
+description: 'Build, tag, and push Docker container images with SBOM, provenance, and layer caching'
+
 inputs:
+  # ── Image Details ──────────────────────────────────────────────────
   dockerImage:
-    description: Docker Image
+    description: 'Docker image name (e.g. myorg/myapp)'
     required: true
   dockerImageTag:
-    description: Docker Image tag (comma separated for multiple)
-    default: "latest"
-    required: false
-  dockerFileContext:
-    description: Dockerfile Context
-    default: "."
+    description: 'Comma-separated tags to apply (e.g. latest,v1.0.0,sha-abc1234)'
+    default: 'latest'
     required: false
   dockerRegistry:
-    description: Docker registry (Default docker.io)
-    default: "docker.io"
+    description: 'Container registry host'
+    default: 'docker.io'
     required: false
-  generateSBOM:
-    description: Generate SBOM flag
-    default: "true"
+
+  # ── Build Context ──────────────────────────────────────────────────
+  dockerFileContext:
+    description: 'Build context path'
+    default: '.'
     required: false
-  generateProvenance:
-    description: Generate provenance flag
-    default: "true"
+  dockerFilePath:
+    description: 'Path to Dockerfile relative to context (e.g. docker/Dockerfile.prod)'
+    default: ''
     required: false
+  target:
+    description: 'Multi-stage build target stage'
+    default: ''
+    required: false
+  buildArgs:
+    description: 'Newline-separated build-time variables (e.g. GO_VERSION=1.22)'
+    default: ''
+    required: false
+  buildSecrets:
+    description: 'Newline-separated build secrets (e.g. mysecret=value)'
+    default: ''
+    required: false
+
+  # ── Platforms ──────────────────────────────────────────────────────
   platforms:
-    description: "Comma-separated target platforms"
-    default: "linux/amd64"
+    description: 'Comma-separated target platforms'
+    default: 'linux/amd64'
     required: false
+
+  # ── Registry Auth ──────────────────────────────────────────────────
   DOCKER_USERNAME:
-    description: Docker Registry username
+    description: 'Registry username'
     required: true
   DOCKER_PASSWORD:
-    description: Docker Registry user password
+    description: 'Registry password / token'
     required: true
+
+  # ── Supply-chain Security ──────────────────────────────────────────
+  generateSBOM:
+    description: 'Attach SBOM attestation to the image'
+    default: 'true'
+    required: false
+  generateProvenance:
+    description: 'Attach SLSA provenance attestation to the image'
+    default: 'true'
+    required: false
+
+  # ── Caching ────────────────────────────────────────────────────────
+  cacheEnabled:
+    description: 'Enable Docker layer caching'
+    default: 'true'
+    required: false
+  cacheFrom:
+    description: 'Custom cache source (overrides default registry cache)'
+    default: ''
+    required: false
+  cacheTo:
+    description: 'Custom cache destination (overrides default registry cache)'
+    default: ''
+    required: false
+
+  # ── Advanced ───────────────────────────────────────────────────────
+  pushImage:
+    description: 'Push image to registry after build'
+    default: 'true'
+    required: false
+  loadImage:
+    description: 'Load image into local Docker daemon (single-platform only)'
+    default: 'false'
+    required: false
+  noCache:
+    description: 'Disable all layer caching during build'
+    default: 'false'
+    required: false
+  pullBase:
+    description: 'Always pull base images before building'
+    default: 'false'
+    required: false
+  extraLabels:
+    description: 'Newline-separated additional OCI labels (key=value)'
+    default: ''
+    required: false
+  extraBuildxArgs:
+    description: 'Additional arguments forwarded to docker/build-push-action'
+    default: ''
+    required: false
+  buildxVersion:
+    description: 'Docker Buildx version to install'
+    default: ''
+    required: false
+
 outputs:
   tags:
-    description: 'pushed docker images tags'
-    value: ${{ steps.additional-jsontags.outputs.tags}}
+    description: 'JSON array of pushed image tags'
+    value: ${{ steps.format-tags.outputs.tags }}
   digest:
-    description: 'pushed docker images digest'
-    value: ${{ steps.get-digest.outputs.digest}}
+    description: 'Image digest (sha256:…)'
+    value: ${{ steps.push.outputs.digest }}
+  metadata:
+    description: 'Full build metadata JSON from docker/metadata-action'
+    value: ${{ steps.meta.outputs.json }}
+  imageid:
+    description: 'Image ID'
+    value: ${{ steps.push.outputs.imageid }}
+  fullImageRef:
+    description: 'Primary fully-qualified image reference with digest'
+    value: ${{ steps.build-ref.outputs.ref }}
+
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
+    # ─── 0. Input Validation ─────────────────────────────────────────
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Image name must not be empty
+        if [[ -z "${{ inputs.dockerImage }}" ]]; then
+          echo "::error::dockerImage is required and cannot be empty."
+          exit 1
+        fi
+
+        # Image name must not contain uppercase
+        IMAGE="${{ inputs.dockerImage }}"
+        if [[ "$IMAGE" =~ [A-Z] ]]; then
+          echo "::error::dockerImage must be lowercase (got '${IMAGE}')."
+          exit 1
+        fi
+
+        # Tags must not be empty
+        if [[ -z "${{ inputs.dockerImageTag }}" ]]; then
+          echo "::error::dockerImageTag cannot be empty."
+          exit 1
+        fi
+
+        # Validate tags contain no spaces (common mistake)
+        TAGS="${{ inputs.dockerImageTag }}"
+        if [[ "$TAGS" =~ \  ]]; then
+          echo "::error::dockerImageTag must be comma-separated with no spaces (got '${TAGS}')."
+          exit 1
+        fi
+
+        # Validate platform format
+        PLATFORMS="${{ inputs.platforms }}"
+        for platform in $(echo "$PLATFORMS" | tr ',' ' '); do
+          if [[ ! "$platform" =~ ^[a-z]+/[a-z0-9]+(/v[0-9]+)?$ ]]; then
+            echo "::error::Invalid platform format '${platform}'. Expected os/arch (e.g. linux/amd64)."
+            exit 1
+          fi
+        done
+
+        # Cannot load multi-platform images
+        PLATFORM_COUNT=$(echo "$PLATFORMS" | tr ',' '\n' | wc -l)
+        if [[ "${{ inputs.loadImage }}" == "true" && "$PLATFORM_COUNT" -gt 1 ]]; then
+          echo "::error::loadImage is only supported for single-platform builds."
+          exit 1
+        fi
+
+        # Cannot push and load simultaneously is fine with buildx, but warn
+        if [[ "${{ inputs.pushImage }}" == "true" && "${{ inputs.loadImage }}" == "true" ]]; then
+          echo "::warning::Both pushImage and loadImage are enabled. Build will push AND load."
+        fi
+
+        # Validate Dockerfile exists
+        CONTEXT="${{ inputs.dockerFileContext }}"
+        DOCKERFILE="${{ inputs.dockerFilePath }}"
+        if [[ -n "$DOCKERFILE" ]]; then
+          if [[ ! -f "$DOCKERFILE" ]]; then
+            echo "::error::Dockerfile not found at '${DOCKERFILE}'."
+            exit 1
+          fi
+        else
+          if [[ ! -f "${CONTEXT}/Dockerfile" && ! -f "${CONTEXT}/dockerfile" ]]; then
+            echo "::warning::No Dockerfile found in context '${CONTEXT}'. Build may rely on stdin or .dockerignore patterns."
+          fi
+        fi
+
+        echo "✅ Input validation passed"
+
+    # ─── 1. Checkout ─────────────────────────────────────────────────
     - name: Checkout repository
       uses: actions/checkout@v4
-    - name: Log in to Docker Registry
+
+    # ─── 2. Registry Login ───────────────────────────────────────────
+    - name: Log in to ${{ inputs.dockerRegistry }}
       uses: docker/login-action@v3
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
+
+    # ─── 3. QEMU (multi-platform) ───────────────────────────────────
+    - name: Set up QEMU for multi-platform builds
+      if: ${{ contains(inputs.platforms, ',') }}
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: ${{ inputs.platforms }}
+
+    # ─── 4. Buildx ──────────────────────────────────────────────────
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       with:
         driver: docker-container
-    - name: Build list of additional tags
-      id: additional-tags
-      uses: actions/github-script@v7
-      with:
-        script: |
-          core.setOutput('tags', `${{ inputs.dockerImageTag }}`.split(",").join("\n"))
+        version: ${{ inputs.buildxVersion || null }}
+
+    # ─── 5. Metadata (tags + labels) ────────────────────────────────
+    - name: Parse comma-separated tags
+      id: parse-tags
+      shell: bash
+      run: |
+        set -euo pipefail
+        TAGS="${{ inputs.dockerImageTag }}"
+        # Convert comma-separated to newline-separated
+        NEWLINE_TAGS=$(echo "$TAGS" | tr ',' '\n')
+        # Write multiline output
+        {
+          echo "tags<<EOF"
+          echo "$NEWLINE_TAGS"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Extract metadata (tags, labels) for Docker
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}
         tags: |
-          ${{ steps.additional-tags.outputs.tags }}
-    - name: Build and push Docker image to Registry
+          ${{ steps.parse-tags.outputs.tags }}
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.created=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+          ${{ inputs.extraLabels }}
+
+    # ─── 6. Resolve Cache Configuration ─────────────────────────────
+    - name: Resolve cache settings
+      id: cache-config
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.noCache }}" == "true" ]]; then
+          echo "cache-from=" >> "$GITHUB_OUTPUT"
+          echo "cache-to=" >> "$GITHUB_OUTPUT"
+          echo "📦 Caching disabled (noCache=true)"
+        elif [[ "${{ inputs.cacheEnabled }}" == "true" ]]; then
+          CACHE_FROM="${{ inputs.cacheFrom }}"
+          CACHE_TO="${{ inputs.cacheTo }}"
+          REGISTRY="${{ inputs.dockerRegistry }}"
+          IMAGE="${{ inputs.dockerImage }}"
+
+          # Default to registry-backed cache
+          if [[ -z "$CACHE_FROM" ]]; then
+            CACHE_FROM="type=registry,ref=${REGISTRY}/${IMAGE}:buildcache"
+          fi
+          if [[ -z "$CACHE_TO" ]]; then
+            CACHE_TO="type=registry,ref=${REGISTRY}/${IMAGE}:buildcache,mode=max"
+          fi
+
+          echo "cache-from=${CACHE_FROM}" >> "$GITHUB_OUTPUT"
+          echo "cache-to=${CACHE_TO}" >> "$GITHUB_OUTPUT"
+          echo "📦 Cache: from=${CACHE_FROM} → to=${CACHE_TO}"
+        else
+          echo "cache-from=" >> "$GITHUB_OUTPUT"
+          echo "cache-to=" >> "$GITHUB_OUTPUT"
+          echo "📦 Caching not enabled"
+        fi
+
+    # ─── 7. Build & Push ────────────────────────────────────────────
+    - name: Build and push Docker image
       id: push
       uses: docker/build-push-action@v6
       with:
         context: ${{ inputs.dockerFileContext }}
-        push: true
+        file: ${{ inputs.dockerFilePath || null }}
+        target: ${{ inputs.target || null }}
+        push: ${{ inputs.pushImage }}
+        load: ${{ inputs.loadImage }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         annotations: ${{ steps.meta.outputs.annotations }}
+        build-args: ${{ inputs.buildArgs }}
+        secrets: ${{ inputs.buildSecrets }}
         sbom: ${{ inputs.generateSBOM }}
         provenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
-    - name: Build Json array of tags for Docker Signing
+        no-cache: ${{ inputs.noCache }}
+        pull: ${{ inputs.pullBase }}
+        cache-from: ${{ steps.cache-config.outputs.cache-from }}
+        cache-to: ${{ steps.cache-config.outputs.cache-to }}
+
+    # ─── 8. Format Outputs ──────────────────────────────────────────
+    - name: Build JSON array of tags
+      id: format-tags
       shell: bash
-      id: additional-jsontags
       run: |
-        echo tags=$(echo ${{ inputs.dockerImageTag }} | sed 's/,/\n/g'| jq --raw-input | jq --slurp -c) >> $GITHUB_OUTPUT
-    - name: Get Digests for attest and cosign
+        set -euo pipefail
+        TAGS="${{ inputs.dockerImageTag }}"
+        JSON_TAGS=$(echo "$TAGS" | tr ',' '\n' | jq --raw-input | jq --slurp -c)
+        echo "tags=${JSON_TAGS}" >> "$GITHUB_OUTPUT"
+        echo "📋 Tags JSON: ${JSON_TAGS}"
+
+    - name: Build primary image reference
+      id: build-ref
       shell: bash
-      id: get-digest
       run: |
-        echo digest=$(echo ${{ steps.push.outputs.digest}}) >> $GITHUB_OUTPUT
+        set -euo pipefail
+        DIGEST="${{ steps.push.outputs.digest }}"
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        FIRST_TAG=$(echo "${{ inputs.dockerImageTag }}" | cut -d',' -f1)
+
+        if [[ -n "$DIGEST" ]]; then
+          REF="${REGISTRY}/${IMAGE}:${FIRST_TAG}@${DIGEST}"
+        else
+          REF="${REGISTRY}/${IMAGE}:${FIRST_TAG}"
+        fi
+
+        echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+        echo "🔗 Primary ref: ${REF}"
+
+    # ─── 9. Verify Push ─────────────────────────────────────────────
+    - name: Verify image is accessible
+      if: ${{ inputs.pushImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        DIGEST="${{ steps.push.outputs.digest }}"
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        FIRST_TAG=$(echo "${{ inputs.dockerImageTag }}" | cut -d',' -f1)
+
+        echo "🔍 Verifying pushed image..."
+        REF="${REGISTRY}/${IMAGE}:${FIRST_TAG}"
+
+        if docker buildx imagetools inspect "${REF}@${DIGEST}" > /dev/null 2>&1; then
+          echo "✅ Image verified: ${REF}@${DIGEST}"
+        elif docker buildx imagetools inspect "${REF}" > /dev/null 2>&1; then
+          echo "✅ Image verified (by tag): ${REF}"
+        else
+          echo "::warning::Could not verify image accessibility. It may still be propagating."
+        fi
+
+    # ─── 10. Job Summary ────────────────────────────────────────────
+    - name: Write job summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        DIGEST="${{ steps.push.outputs.digest }}"
+        IMAGE_ID="${{ steps.push.outputs.imageid }}"
+        TAGS="${{ inputs.dockerImageTag }}"
+        PLATFORMS="${{ inputs.platforms }}"
+        PUSHED="${{ inputs.pushImage }}"
+        SBOM="${{ inputs.generateSBOM }}"
+        PROVENANCE="${{ inputs.generateProvenance }}"
+        CACHE="${{ inputs.cacheEnabled }}"
+
+        # Status emoji
+        if [[ -n "$DIGEST" ]]; then
+          STATUS="✅ Success"
+        else
+          STATUS="⚠️ No digest (build-only or failed)"
+        fi
+
+        {
+          echo "## 🐳 Docker Build Summary"
+          echo ""
+          echo "| Property | Value |"
+          echo "|----------|-------|"
+          echo "| **Status** | ${STATUS} |"
+          echo "| **Registry** | \`${REGISTRY}\` |"
+          echo "| **Image** | \`${IMAGE}\` |"
+          echo "| **Digest** | \`${DIGEST:-N/A}\` |"
+          echo "| **Image ID** | \`${IMAGE_ID:-N/A}\` |"
+          echo "| **Platforms** | \`${PLATFORMS}\` |"
+          echo "| **Pushed** | \`${PUSHED}\` |"
+          echo "| **SBOM** | \`${SBOM}\` |"
+          echo "| **Provenance** | \`${PROVENANCE}\` |"
+          echo "| **Cache** | \`${CACHE}\` |"
+          echo ""
+          echo "### 🏷️ Tags"
+          echo ""
+          for tag in $(echo "$TAGS" | tr ',' ' '); do
+            if [[ -n "$DIGEST" ]]; then
+              echo "- \`${REGISTRY}/${IMAGE}:${tag}@${DIGEST}\`"
+            else
+              echo "- \`${REGISTRY}/${IMAGE}:${tag}\`"
+            fi
+          done
+          echo ""
+          echo "### 📋 Full Metadata"
+          echo ""
+          echo "<details>"
+          echo "<summary>Click to expand</summary>"
+          echo ""
+          echo '```json'
+          echo '${{ steps.meta.outputs.json }}' | jq '.' 2>/dev/null || echo '${{ steps.meta.outputs.json }}'
+          echo '```'
+          echo ""
+          echo "</details>"
+        } >> "$GITHUB_STEP_SUMMARY"
+
 branding:
-  icon: "anchor"
-  color: "gray-dark"
+  icon: 'package'
+  color: 'blue'

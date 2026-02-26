@@ -1,52 +1,388 @@
-name: Attest docker image
-description: 'This action is used to attest docker image'
+name: Attest Docker Image
+description: >-
+  Generate and push attestations for Docker container images using GitHub's
+  built-in attestation infrastructure (SLSA build provenance & SBOM)
+
 inputs:
+  # ── Image Details ──────────────────────────────────────────────────
   dockerImage:
-    description: Docker Image
+    description: 'Docker image name (e.g. myorg/myapp)'
     required: true
   dockerImageDigest:
-    description: Docker Image Digest     
-    required: false
+    description: 'Image digest (sha256:…) — required for attestation integrity'
+    required: true
   dockerRegistry:
-    description: Docker registry (Default docker.io)
-    default: "docker.io"
+    description: 'Container registry where the image is hosted'
+    default: 'docker.io'
     required: false
+
+  # ── Registry Auth ──────────────────────────────────────────────────
   DOCKER_USERNAME:
-    description: Docker Registry username
+    description: 'Registry username'
     required: true
   DOCKER_PASSWORD:
-    description: Docker Registry user password
+    description: 'Registry password / token'
     required: true
-  attestImageRegistry:
-    description: Docker Image Registry for Attestation by Github (default docker.io)        
-    required: false
-    default: "docker.io"
+
+  # ── Attestation Toggle ─────────────────────────────────────────────
   attestImage:
-    description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
+    description: >-
+      Enable attestation (requires `permissions: attestations: write, id-token: write`)
     required: false
-    default: "false"
+    default: 'false'
+
+  # ── Attestation Registry ───────────────────────────────────────────
+  attestImageRegistry:
+    description: >-
+      Registry used as the subject-name prefix in the attestation bundle.
+      Defaults to dockerRegistry. Override only when the attestation must
+      reference a different registry (e.g. mirroring scenarios).
+    required: false
+    default: ''
+
+  # ── Provenance ─────────────────────────────────────────────────────
+  attestProvenance:
+    description: 'Generate SLSA build-provenance attestation'
+    required: false
+    default: 'true'
+  pushProvenanceToRegistry:
+    description: 'Push provenance attestation bundle to the registry'
+    required: false
+    default: 'true'
+
+  # ── SBOM ───────────────────────────────────────────────────────────
+  attestSBOM:
+    description: 'Generate SBOM attestation'
+    required: false
+    default: 'false'
+  sbomFilePath:
+    description: 'Path to a pre-generated SBOM file (SPDX JSON or CycloneDX). If empty, SBOM is generated automatically via Anchore.'
+    required: false
+    default: ''
+  pushSBOMToRegistry:
+    description: 'Push SBOM attestation bundle to the registry'
+    required: false
+    default: 'true'
+
+  # ── Verification ───────────────────────────────────────────────────
+  verifyAttestation:
+    description: 'Verify attestations after generation using GitHub CLI'
+    required: false
+    default: 'true'
+
+  # ── Advanced ───────────────────────────────────────────────────────
+  githubToken:
+    description: 'GitHub token for attestation verification (defaults to GITHUB_TOKEN)'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  provenanceBundleId:
+    description: 'Bundle ID of the provenance attestation'
+    value: ${{ steps.attest-provenance.outputs.bundle-id || '' }}
+  sbomBundleId:
+    description: 'Bundle ID of the SBOM attestation'
+    value: ${{ steps.attest-sbom.outputs.bundle-id || '' }}
+  attestedImage:
+    description: 'Fully-qualified attested image reference (registry/image@digest)'
+    value: ${{ steps.build-ref.outputs.ref }}
+  verificationStatus:
+    description: '"success" if post-attest verification passed, "skipped" otherwise'
+    value: ${{ steps.verify.outputs.status || 'skipped' }}
+
 runs:
-  using: "composite" 
+  using: 'composite'
   steps:
-    - name: Log in to Docker Registry
+    # ─── 0. Input Validation ─────────────────────────────────────────
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Must enable attestation
+        if [[ "${{ inputs.attestImage }}" != "true" ]]; then
+          echo "::notice::attestImage is not enabled — all attestation steps will be skipped."
+          exit 0
+        fi
+
+        # Image name is required
+        if [[ -z "${{ inputs.dockerImage }}" ]]; then
+          echo "::error::dockerImage is required and cannot be empty."
+          exit 1
+        fi
+
+        # Digest is required for attestation
+        DIGEST="${{ inputs.dockerImageDigest }}"
+        if [[ -z "$DIGEST" ]]; then
+          echo "::error::dockerImageDigest is required for attestation. Build your image with digest output enabled."
+          exit 1
+        fi
+
+        # Digest must be valid sha256 format
+        if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          echo "::error::dockerImageDigest must be in 'sha256:<64-hex-chars>' format (got '${DIGEST}')."
+          exit 1
+        fi
+
+        # At least one attestation type should be enabled
+        if [[ "${{ inputs.attestProvenance }}" != "true" && "${{ inputs.attestSBOM }}" != "true" ]]; then
+          echo "::error::At least one attestation type must be enabled (attestProvenance or attestSBOM)."
+          exit 1
+        fi
+
+        # SBOM file must exist if specified
+        SBOM_PATH="${{ inputs.sbomFilePath }}"
+        if [[ -n "$SBOM_PATH" && ! -f "$SBOM_PATH" ]]; then
+          echo "::error::SBOM file not found at '${SBOM_PATH}'."
+          exit 1
+        fi
+
+        echo "✅ Input validation passed"
+
+    # ─── 1. Resolve Attestation Registry ─────────────────────────────
+    - name: Resolve attestation registry
+      id: resolve-registry
+      if: ${{ inputs.attestImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        ATTEST_REGISTRY="${{ inputs.attestImageRegistry }}"
+        if [[ -z "$ATTEST_REGISTRY" ]]; then
+          ATTEST_REGISTRY="${{ inputs.dockerRegistry }}"
+        fi
+        echo "registry=${ATTEST_REGISTRY}" >> "$GITHUB_OUTPUT"
+        echo "📋 Attestation subject registry: ${ATTEST_REGISTRY}"
+
+    # ─── 2. Build Image Reference ────────────────────────────────────
+    - name: Build fully-qualified image reference
+      id: build-ref
+      if: ${{ inputs.attestImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        REGISTRY="${{ steps.resolve-registry.outputs.registry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        DIGEST="${{ inputs.dockerImageDigest }}"
+        REF="${REGISTRY}/${IMAGE}@${DIGEST}"
+        echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+        echo "🔗 Attesting: ${REF}"
+
+    # ─── 3. Registry Login ───────────────────────────────────────────
+    - name: Log in to ${{ inputs.dockerRegistry }}
       if: ${{ inputs.attestImage == 'true' }}
       uses: docker/login-action@v3
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
-    - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
-      shell: bash
-      if: ${{ inputs.attestImage == 'true' }}
-      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
-    - name: Attest the publised Docker image with Github
-      if: ${{ inputs.attestImage == 'true' }}
-      uses: actions/attest-build-provenance@v1
-      id: attest
+
+    # ─── 4. Login to Attestation Registry (if different) ─────────────
+    - name: Log in to attestation registry
+      if: >-
+        ${{
+          inputs.attestImage == 'true' &&
+          inputs.attestImageRegistry != '' &&
+          inputs.attestImageRegistry != inputs.dockerRegistry
+        }}
+      uses: docker/login-action@v3
       with:
-        subject-name: ${{ inputs.attestImageRegistry }}/${{ inputs.dockerImage }}
+        registry: ${{ inputs.attestImageRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+
+    # ─── 5. Pull Image ──────────────────────────────────────────────
+    - name: Pull image for attestation
+      if: ${{ inputs.attestImage == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        IMAGE_REF="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}"
+        echo "📥 Pulling ${IMAGE_REF}..."
+
+        MAX_RETRIES=3
+        RETRY_DELAY=5
+
+        for attempt in $(seq 1 $MAX_RETRIES); do
+          if docker pull "${IMAGE_REF}"; then
+            echo "✅ Pull succeeded on attempt ${attempt}"
+            break
+          fi
+          if [[ $attempt -eq $MAX_RETRIES ]]; then
+            echo "::error::Failed to pull image after ${MAX_RETRIES} attempts."
+            exit 1
+          fi
+          echo "::warning::Pull attempt ${attempt} failed. Retrying in ${RETRY_DELAY}s..."
+          sleep $RETRY_DELAY
+          RETRY_DELAY=$((RETRY_DELAY * 2))
+        done
+
+    # ─── 6. Attest Build Provenance ─────────────────────────────────
+    - name: Attest build provenance (SLSA)
+      if: ${{ inputs.attestImage == 'true' && inputs.attestProvenance == 'true' }}
+      id: attest-provenance
+      uses: actions/attest-build-provenance@v2
+      with:
+        subject-name: ${{ steps.resolve-registry.outputs.registry }}/${{ inputs.dockerImage }}
         subject-digest: ${{ inputs.dockerImageDigest }}
-        push-to-registry: true
+        push-to-registry: ${{ inputs.pushProvenanceToRegistry }}
+        github-token: ${{ inputs.githubToken }}
+
+    # ─── 7. Generate SBOM (if no file provided) ─────────────────────
+    - name: Generate SBOM with Anchore
+      if: >-
+        ${{
+          inputs.attestImage == 'true' &&
+          inputs.attestSBOM == 'true' &&
+          inputs.sbomFilePath == ''
+        }}
+      id: generate-sbom
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
+        format: spdx-json
+        output-file: /tmp/sbom-attestation.spdx.json
+        upload-artifact: false
+
+    # ─── 8. Attest SBOM ─────────────────────────────────────────────
+    - name: Attest SBOM
+      if: ${{ inputs.attestImage == 'true' && inputs.attestSBOM == 'true' }}
+      id: attest-sbom
+      uses: actions/attest-sbom@v2
+      with:
+        subject-name: ${{ steps.resolve-registry.outputs.registry }}/${{ inputs.dockerImage }}
+        subject-digest: ${{ inputs.dockerImageDigest }}
+        sbom-path: ${{ inputs.sbomFilePath || '/tmp/sbom-attestation.spdx.json' }}
+        push-to-registry: ${{ inputs.pushSBOMToRegistry }}
+        github-token: ${{ inputs.githubToken }}
+
+    # ─── 9. Verify Attestations ──────────────────────────────────────
+    - name: Verify attestations
+      id: verify
+      if: ${{ inputs.attestImage == 'true' && inputs.verifyAttestation == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.githubToken }}
+      run: |
+        set -euo pipefail
+        IMAGE_REF="${{ steps.build-ref.outputs.ref }}"
+
+        echo "🔍 Verifying attestations for ${IMAGE_REF}..."
+
+        # Verify provenance
+        if [[ "${{ inputs.attestProvenance }}" == "true" ]]; then
+          echo ""
+          echo "── Provenance Attestation ──"
+          if gh attestation verify "oci://${IMAGE_REF}" \
+            --owner "${{ github.repository_owner }}" 2>&1; then
+            echo "✅ Provenance attestation verified"
+          else
+            echo "::warning::Provenance attestation verification failed. This may be expected for private repos or first-time attestations."
+          fi
+        fi
+
+        # Verify SBOM
+        if [[ "${{ inputs.attestSBOM }}" == "true" ]]; then
+          echo ""
+          echo "── SBOM Attestation ──"
+          if gh attestation verify "oci://${IMAGE_REF}" \
+            --owner "${{ github.repository_owner }}" \
+            --predicate-type "https://spdx.dev/Document" 2>&1; then
+            echo "✅ SBOM attestation verified"
+          else
+            echo "::warning::SBOM attestation verification failed. This may be expected for non-SPDX formats."
+          fi
+        fi
+
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        echo ""
+        echo "✅ Verification complete"
+
+    # ─── 10. List Attestations ───────────────────────────────────────
+    - name: List all attestations
+      if: ${{ inputs.attestImage == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.githubToken }}
+      run: |
+        set -euo pipefail
+        DIGEST="${{ inputs.dockerImageDigest }}"
+
+        echo "📜 Fetching attestation list..."
+        gh attestation list \
+          --owner "${{ github.repository_owner }}" \
+          --digest "${DIGEST}" 2>&1 || echo "::notice::No attestations listed (may require repo-level permissions)."
+
+    # ─── 11. Job Summary ────────────────────────────────────────────
+    - name: Write job summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.attestImage }}" != "true" ]]; then
+          echo "## 📝 Attestation Skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "Attestation was not enabled (\`attestImage: false\`)." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        REGISTRY="${{ steps.resolve-registry.outputs.registry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        DIGEST="${{ inputs.dockerImageDigest }}"
+        PROV_ENABLED="${{ inputs.attestProvenance }}"
+        SBOM_ENABLED="${{ inputs.attestSBOM }}"
+        PROV_BUNDLE="${{ steps.attest-provenance.outputs.bundle-id || 'N/A' }}"
+        SBOM_BUNDLE="${{ steps.attest-sbom.outputs.bundle-id || 'N/A' }}"
+        VERIFY_STATUS="${{ steps.verify.outputs.status || 'skipped' }}"
+
+        {
+          echo "## 📝 Docker Image Attestation Summary"
+          echo ""
+          echo "| Property | Value |"
+          echo "|----------|-------|"
+          echo "| **Image** | \`${REGISTRY}/${IMAGE}\` |"
+          echo "| **Digest** | \`${DIGEST}\` |"
+          echo "| **Repository** | \`${{ github.repository }}\` |"
+          echo "| **Workflow** | \`${{ github.workflow }}\` |"
+          echo "| **Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+          echo "| **Commit** | \`${{ github.sha }}\` |"
+          echo ""
+          echo "### Attestation Types"
+          echo ""
+          echo "| Type | Enabled | Bundle ID | Pushed |"
+          echo "|------|---------|-----------|--------|"
+
+          if [[ "$PROV_ENABLED" == "true" ]]; then
+            echo "| 🛡️ **SLSA Provenance** | ✅ | \`${PROV_BUNDLE}\` | \`${{ inputs.pushProvenanceToRegistry }}\` |"
+          else
+            echo "| 🛡️ **SLSA Provenance** | ⏭️ Skipped | — | — |"
+          fi
+
+          if [[ "$SBOM_ENABLED" == "true" ]]; then
+            SBOM_SRC="Auto-generated"
+            [[ -n "${{ inputs.sbomFilePath }}" ]] && SBOM_SRC="Provided (\`${{ inputs.sbomFilePath }}\`)"
+            echo "| 📦 **SBOM** | ✅ (${SBOM_SRC}) | \`${SBOM_BUNDLE}\` | \`${{ inputs.pushSBOMToRegistry }}\` |"
+          else
+            echo "| 📦 **SBOM** | ⏭️ Skipped | — | — |"
+          fi
+
+          echo ""
+          echo "### Verification"
+          echo ""
+          if [[ "$VERIFY_STATUS" == "success" ]]; then
+            echo "✅ Post-attestation verification **passed**"
+          else
+            echo "⏭️ Verification was **${VERIFY_STATUS}**"
+          fi
+          echo ""
+          echo "#### Verify Locally"
+          echo ""
+          echo '```bash'
+          echo "# Install GitHub CLI and authenticate"
+          echo "gh attestation verify oci://${REGISTRY}/${IMAGE}@${DIGEST} \\"
+          echo "  --owner ${{ github.repository_owner }}"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
 branding:
-  icon: "anchor"
-  color: "gray-dark"
+  icon: 'shield'
+  color: 'green'

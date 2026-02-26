@@ -1,81 +1,336 @@
-name: Cosign docker image
-description: 'This action is used to Cosign docker images'
+name: Cosign Docker Image
+description: 'Sign and verify Docker container images using Sigstore Cosign (key-pair or keyless OIDC)'
+
 inputs:
+  # ── Image Details ──────────────────────────────────────────────────
   dockerImage:
-    description: Docker Image
+    description: 'Docker image name (e.g. myorg/myapp)'
     required: true
   dockerImageTag:
-    description: Docker Image tag (comma separated for multiple inside table)
-    default: "['latest']"
+    description: 'JSON array of tags to sign (e.g. ["latest","v1.0.0"])'
+    default: '["latest"]'
   dockerImageDigest:
-    description: Docker Image Digest     
+    description: 'Image digest (sha256:…) – strongly recommended for provenance'
     required: false
+    default: ''
+
+  # ── Registry ───────────────────────────────────────────────────────
   dockerRegistry:
-    description: Docker registry (Default docker.io)
-    default: "docker.io"
+    description: 'Container registry host'
+    default: 'docker.io'
     required: false
   DOCKER_USERNAME:
-    description: Docker Registry username
+    description: 'Registry username'
     required: true
   DOCKER_PASSWORD:
-    description: Docker Registry user password
+    description: 'Registry password / token'
     required: true
+
+  # ── Signing Mode ───────────────────────────────────────────────────
   cosignImage:
-    description: Enable Docker Image Signing (Cosign)
+    description: 'Enable signing with a Cosign key-pair'
     required: false
-    default: "false"
+    default: 'false'
   cosignOidcImage:
-    description: Enable Docker Image Signing (Cosign) with Github OIDC Token (id-token write permission must be provided with cosignImage must be enabled)    
+    description: >-
+      Enable keyless signing via GitHub OIDC
+      (requires `permissions: id-token: write` on the calling job)
     required: false
-    default: "false"
+    default: 'false'
+
+  # ── Key-pair Inputs ────────────────────────────────────────────────
   COSIGN_PRIVATE_KEY:
-    description: Cosign Signing Private Key
+    description: 'Cosign private key (PEM or KMS URI)'
     required: false
+    default: ''
   COSIGN_PASSWORD:
-    description: Cosign Signing Private Key Passphrase
+    description: 'Passphrase for the Cosign private key'
     required: false
+    default: ''
+
+  # ── Verification ───────────────────────────────────────────────────
+  verifySigning:
+    description: 'Verify signatures immediately after signing'
+    required: false
+    default: 'true'
+  COSIGN_PUBLIC_KEY:
+    description: 'Cosign public key for verification (key-pair mode)'
+    required: false
+    default: ''
+  certificateIdentity:
+    description: 'Expected OIDC identity for keyless verification (e.g. workflow URL)'
+    required: false
+    default: ''
+  certificateOidcIssuer:
+    description: 'Expected OIDC issuer for keyless verification'
+    required: false
+    default: 'https://token.actions.githubusercontent.com'
+
+  # ── Advanced ───────────────────────────────────────────────────────
+  cosignVersion:
+    description: 'Cosign version to install'
+    required: false
+    default: 'v2.4.1'
+  annotations:
+    description: >-
+      Comma-separated key=value annotations appended to the signature
+      (e.g. "repo=${{ github.repository }},sha=${{ github.sha }}")
+    required: false
+    default: ''
+  cosignArgs:
+    description: 'Extra arguments forwarded verbatim to `cosign sign`'
+    required: false
+    default: ''
+  force:
+    description: 'Overwrite existing signatures (--force)'
+    required: false
+    default: 'false'
+  recursiveSigning:
+    description: 'Sign all images in an index/manifest list recursively'
+    required: false
+    default: 'false'
+
+outputs:
+  signedImages:
+    description: 'Space-separated list of signed image references'
+    value: ${{ steps.build-refs.outputs.images }}
+  verificationStatus:
+    description: '"success" if post-sign verification passed, "skipped" otherwise'
+    value: ${{ steps.verify.outputs.status || 'skipped' }}
+  cosignVersion:
+    description: 'Installed Cosign version'
+    value: ${{ steps.install-cosign.outputs.version || '' }}
+
 runs:
-  using: "composite"  
+  using: 'composite'
   steps:
-    - name: Log in to Docker Registry
-      if: ${{ inputs.cosignImage == 'true' }}
+    # ─── 0. Pre-flight Validation ────────────────────────────────────
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        SIGN_ENABLED="${{ inputs.cosignImage }}"
+        OIDC_ENABLED="${{ inputs.cosignOidcImage }}"
+
+        if [[ "$SIGN_ENABLED" != "true" && "$OIDC_ENABLED" != "true" ]]; then
+          echo "::error::At least one signing mode must be enabled (cosignImage or cosignOidcImage)."
+          exit 1
+        fi
+
+        if [[ "$SIGN_ENABLED" == "true" && "$OIDC_ENABLED" == "true" ]]; then
+          echo "::error::Only one signing mode may be active at a time."
+          exit 1
+        fi
+
+        # Key-pair mode requires key material
+        if [[ "$SIGN_ENABLED" == "true" ]]; then
+          if [[ -z "${{ inputs.COSIGN_PRIVATE_KEY }}" ]]; then
+            echo "::error::COSIGN_PRIVATE_KEY is required when cosignImage is enabled."
+            exit 1
+          fi
+        fi
+
+        # Validate the tag JSON
+        if ! echo '${{ inputs.dockerImageTag }}' | jq -e 'type == "array"' > /dev/null 2>&1; then
+          echo "::error::dockerImageTag must be a valid JSON array (e.g. [\"latest\"])."
+          exit 1
+        fi
+
+        # Warn when digest is missing
+        if [[ -z "${{ inputs.dockerImageDigest }}" ]]; then
+          echo "::warning::No dockerImageDigest supplied – signatures will be tag-only which is less secure."
+        fi
+
+        echo "✅ Input validation passed"
+
+    # ─── 1. Registry Login ───────────────────────────────────────────
+    - name: Log in to ${{ inputs.dockerRegistry }}
       uses: docker/login-action@v3
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
-    - name: Install Cosign
-      if: ${{ inputs.cosignImage == 'true' }}
+
+    # ─── 2. Install Cosign ───────────────────────────────────────────
+    - name: Install Cosign ${{ inputs.cosignVersion }}
+      id: install-cosign
       uses: sigstore/cosign-installer@v3.7.0
-    - name: Sign the published ghcr.io Docker image with Cosign
+      with:
+        cosign-release: ${{ inputs.cosignVersion }}
+
+    - name: Print Cosign version
+      shell: bash
+      run: cosign version
+
+    # ─── 3. Build Image Reference List ───────────────────────────────
+    - name: Build fully-qualified image references
+      id: build-refs
+      shell: bash
+      run: |
+        set -euo pipefail
+        DIGEST="${{ inputs.dockerImageDigest }}"
+        REGISTRY="${{ inputs.dockerRegistry }}"
+        IMAGE="${{ inputs.dockerImage }}"
+        TAGS='${{ inputs.dockerImageTag }}'
+
+        images=""
+        TAGS_LIST=$(echo "$TAGS" | jq -r '.[]')
+
+        for tag in $TAGS_LIST; do
+          if [[ -n "$DIGEST" ]]; then
+            ref="${REGISTRY}/${IMAGE}:${tag}@${DIGEST}"
+          else
+            ref="${REGISTRY}/${IMAGE}:${tag}"
+          fi
+          images+="${ref} "
+          echo "  → $ref"
+        done
+
+        # Trim trailing space
+        images="${images% }"
+        echo "images=${images}" >> "$GITHUB_OUTPUT"
+        echo "📦 References to sign: ${images}"
+
+    # ─── 4a. Sign with Key-Pair ──────────────────────────────────────
+    - name: 'Sign image(s) with Cosign key-pair'
       if: ${{ inputs.cosignImage == 'true' }}
       shell: bash
       run: |
-        images=""
-        TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
-        for tag in ${TAGS_LIST}; do
-          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
-          docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST}
-        done
-        cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${images}
+        set -euo pipefail
+        IMAGES="${{ steps.build-refs.outputs.images }}"
+
+        # Build annotation flags
+        ANNOTATION_FLAGS=""
+        if [[ -n "$ANNOTATIONS" ]]; then
+          IFS=',' read -ra PAIRS <<< "$ANNOTATIONS"
+          for pair in "${PAIRS[@]}"; do
+            ANNOTATION_FLAGS+=" -a ${pair}"
+          done
+        fi
+
+        # Build optional flags
+        EXTRA_FLAGS=""
+        [[ "${{ inputs.force }}" == "true" ]]             && EXTRA_FLAGS+=" --force"
+        [[ "${{ inputs.recursiveSigning }}" == "true" ]]   && EXTRA_FLAGS+=" --recursive"
+        [[ -n "${{ inputs.cosignArgs }}" ]]                && EXTRA_FLAGS+=" ${{ inputs.cosignArgs }}"
+
+        echo "🔏 Signing with key-pair..."
+        cosign sign --yes \
+          --key env://COSIGN_PRIVATE_KEY \
+          ${ANNOTATION_FLAGS} \
+          ${EXTRA_FLAGS} \
+          ${IMAGES}
+
+        echo "✅ Key-pair signing complete"
       env:
         COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
         COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
-        DIGEST: ${{ inputs.dockerImageDigest }}
-        TAGS: ${{ inputs.dockerImageTag }}
-    - name: Sign the published ghcr.io Docker image with GitHub OIDC Token
+        ANNOTATIONS: ${{ inputs.annotations }}
+
+    # ─── 4b. Sign with GitHub OIDC (Keyless) ─────────────────────────
+    - name: 'Sign image(s) with GitHub OIDC (keyless)'
       if: ${{ inputs.cosignOidcImage == 'true' }}
       shell: bash
       run: |
-          images=""
-          TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
-          for tag in ${TAGS_LIST}; do
-            images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+        set -euo pipefail
+        IMAGES="${{ steps.build-refs.outputs.images }}"
+
+        # Build annotation flags
+        ANNOTATION_FLAGS=""
+        if [[ -n "$ANNOTATIONS" ]]; then
+          IFS=',' read -ra PAIRS <<< "$ANNOTATIONS"
+          for pair in "${PAIRS[@]}"; do
+            ANNOTATION_FLAGS+=" -a ${pair}"
           done
-          cosign sign --yes ${images}
+        fi
+
+        # Build optional flags
+        EXTRA_FLAGS=""
+        [[ "${{ inputs.force }}" == "true" ]]             && EXTRA_FLAGS+=" --force"
+        [[ "${{ inputs.recursiveSigning }}" == "true" ]]   && EXTRA_FLAGS+=" --recursive"
+        [[ -n "${{ inputs.cosignArgs }}" ]]                && EXTRA_FLAGS+=" ${{ inputs.cosignArgs }}"
+
+        echo "🔏 Signing with GitHub OIDC (keyless)..."
+        cosign sign --yes \
+          ${ANNOTATION_FLAGS} \
+          ${EXTRA_FLAGS} \
+          ${IMAGES}
+
+        echo "✅ Keyless signing complete"
       env:
-        DIGEST: ${{ inputs.dockerImageDigest }}
-        TAGS: ${{ inputs.dockerImageTag }}
+        ANNOTATIONS: ${{ inputs.annotations }}
+
+    # ─── 5. Verify Signatures ────────────────────────────────────────
+    - name: Verify signatures
+      id: verify
+      if: ${{ inputs.verifySigning == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        IMAGES="${{ steps.build-refs.outputs.images }}"
+
+        echo "🔍 Verifying signatures..."
+        for image in ${IMAGES}; do
+          echo "  → Verifying ${image}"
+
+          if [[ "${{ inputs.cosignImage }}" == "true" ]]; then
+            if [[ -n "${{ inputs.COSIGN_PUBLIC_KEY }}" ]]; then
+              cosign verify --key env://COSIGN_PUBLIC_KEY "${image}"
+            else
+              echo "::warning::COSIGN_PUBLIC_KEY not provided – skipping key-pair verification for ${image}"
+            fi
+          fi
+
+          if [[ "${{ inputs.cosignOidcImage }}" == "true" ]]; then
+            CERT_IDENTITY="${{ inputs.certificateIdentity }}"
+            CERT_ISSUER="${{ inputs.certificateOidcIssuer }}"
+
+            if [[ -n "$CERT_IDENTITY" && -n "$CERT_ISSUER" ]]; then
+              cosign verify \
+                --certificate-identity "${CERT_IDENTITY}" \
+                --certificate-oidc-issuer "${CERT_ISSUER}" \
+                "${image}"
+            else
+              echo "::warning::certificateIdentity not set – skipping keyless verification for ${image}"
+            fi
+          fi
+        done
+
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        echo "✅ Verification complete"
+      env:
+        COSIGN_PUBLIC_KEY: ${{ inputs.COSIGN_PUBLIC_KEY }}
+
+    # ─── 6. Summary ─────────────────────────────────────────────────
+    - name: Write job summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        IMAGES="${{ steps.build-refs.outputs.images }}"
+        MODE="unknown"
+        [[ "${{ inputs.cosignImage }}" == "true" ]]     && MODE="🔑 Key-pair"
+        [[ "${{ inputs.cosignOidcImage }}" == "true" ]]  && MODE="🆔 GitHub OIDC (keyless)"
+
+        {
+          echo "## 🖊️ Cosign Signing Summary"
+          echo ""
+          echo "| Property | Value |"
+          echo "|----------|-------|"
+          echo "| **Registry** | \`${{ inputs.dockerRegistry }}\` |"
+          echo "| **Image** | \`${{ inputs.dockerImage }}\` |"
+          echo "| **Digest** | \`${{ inputs.dockerImageDigest || 'N/A' }}\` |"
+          echo "| **Mode** | ${MODE} |"
+          echo "| **Cosign** | \`${{ inputs.cosignVersion }}\` |"
+          echo "| **Verified** | \`${{ steps.verify.outputs.status || 'skipped' }}\` |"
+          echo ""
+          echo "### Signed References"
+          echo ""
+          for img in ${IMAGES}; do
+            echo "- \`${img}\`"
+          done
+        } >> "$GITHUB_STEP_SUMMARY"
+
 branding:
-  icon: "anchor"
-  color: "gray-dark"
+  icon: 'shield'
+  color: 'green'
