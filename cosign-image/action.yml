@@ -39,14 +39,14 @@ runs:
   steps:
     - name: Log in to Docker Registry
       if: ${{ inputs.cosignImage == 'true' }}
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
     - name: Install Cosign
       if: ${{ inputs.cosignImage == 'true' }}
-      uses: sigstore/cosign-installer@v3.7.0
+      uses: sigstore/cosign-installer@v4.1.1
     - name: Sign the published ghcr.io Docker image with Cosign
       if: ${{ inputs.cosignImage == 'true' }}
       shell: bash
