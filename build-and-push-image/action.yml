@@ -85,6 +85,8 @@ runs:
         sbom: ${{ inputs.generateSBOM }}
         provenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
     - name: Build Json array of tags for Docker Signing
       shell: bash
       id: additional-jsontags
