@@ -31,6 +31,10 @@ inputs:
   DOCKER_USERNAME:
     description: Docker Registry username
     required: true
+  labels:
+    description: "Custom labels for the image (multi-line, label=value)"
+    required: false
+    default: ""
   DOCKER_PASSWORD:
     description: Docker Registry user password
     required: true
@@ -73,6 +77,8 @@ runs:
         images: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}
         tags: |
           ${{ steps.additional-tags.outputs.tags }}
+        labels: ${{ inputs.labels }}
+
     - name: Build and push Docker image to Registry
       id: push
       uses: docker/build-push-action@v7

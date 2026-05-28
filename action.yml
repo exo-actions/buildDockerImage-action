@@ -67,6 +67,10 @@ inputs:
     COSIGN_PRIVATE_KEY:
       description: Cosign Signing Private Key
       required: false
+    labels:
+      description: "Custom labels for the image (multi-line, label=value)"
+      required: false
+      default: ""
     COSIGN_PASSWORD:
       description: Cosign Signing Private Key Passphrase
       default: "false"
@@ -85,6 +89,7 @@ runs:
         generateSBOM: ${{ inputs.generateSBOM }}
         generateProvenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
+        labels: ${{ inputs.labels }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
     - name: sign docker image
