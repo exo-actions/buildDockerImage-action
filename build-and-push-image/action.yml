@@ -32,7 +32,11 @@ inputs:
     description: Docker Registry username
     required: true
   labels:
-    description: "Custom labels for the image (multi-line, label=value)"
+    description: "OCI labels for the image (multi-line, key=value)"
+    required: false
+    default: ""
+  annotations:
+    description: "OCI annotations for the image (multi-line, key=value)"
     required: false
     default: ""
   DOCKER_PASSWORD:
@@ -78,6 +82,7 @@ runs:
         tags: |
           ${{ steps.additional-tags.outputs.tags }}
         labels: ${{ inputs.labels }}
+        annotations: ${{ inputs.annotations }}
 
     - name: Build and push Docker image to Registry
       id: push

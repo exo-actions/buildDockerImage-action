@@ -68,7 +68,11 @@ inputs:
       description: Cosign Signing Private Key
       required: false
     labels:
-      description: "Custom labels for the image (multi-line, label=value)"
+      description: "OCI labels for the image (multi-line, key=value)"
+      required: false
+      default: ""
+    annotations:
+      description: "OCI annotations for the image (multi-line, key=value)"
       required: false
       default: ""
     COSIGN_PASSWORD:
