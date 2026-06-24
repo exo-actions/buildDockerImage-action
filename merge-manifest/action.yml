@@ -14,10 +14,6 @@ inputs:
   digestsDir:
     description: "Directory containing *.digest files (one per platform, each containing a single digest)"
     required: true
-  annotations:
-    description: "OCI annotations for the merged manifest (multi-line, key=value)"
-    required: false
-    default: ""
   DOCKER_USERNAME:
     description: Docker Registry username
     required: true
@@ -41,11 +37,9 @@ runs:
         IMAGE: ${{ inputs.dockerImage }}
         TAGS: ${{ inputs.dockerImageTag }}
         DIGESTS_DIR: ${{ inputs.digestsDir }}
-        ANNOTATIONS: ${{ inputs.annotations }}
       run: |
         set -ex
         SOURCES=""
-        ANNOTATION_ARGS=()
 
         for DIGEST_FILE in "${DIGESTS_DIR}"/*.digest; do
           DIGEST=$(cat "${DIGEST_FILE}" | tr -d '\n\r')
@@ -58,13 +52,9 @@ runs:
           exit 1
         fi
 
-        while IFS='=' read -r KEY VALUE; do
-          [ -n "${KEY}" ] && ANNOTATION_ARGS+=("--annotation" "${KEY}=${VALUE}")
-        done <<< "$(printf '%s\n' "${ANNOTATIONS}" | grep -v '^$')"
-
         for TAG in ${TAGS//,/ }; do
           TARGET="${REGISTRY}/${IMAGE}:${TAG}"
-          docker buildx imagetools create "${ANNOTATION_ARGS[@]}" -t "${TARGET}" ${SOURCES}
+          docker buildx imagetools create -t "${TARGET}" ${SOURCES}
           echo "✅ Multi-arch image: ${TARGET}"
         done
 branding:
