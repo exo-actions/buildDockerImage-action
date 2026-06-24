@@ -7,6 +7,7 @@ Action for Docker image build, sign, attest, cosign, and multi-arch manifest mer
 |---|---|
 | `build-and-push-image` | Builds and pushes Docker images with BuildKit, cache, SBOM, provenance |
 | `merge-manifest` | Creates a multi-arch manifest list from single-platform images by digest |
+| `mirror-image` | Copies a multi-arch image between registries (all platforms, annotations preserved) |
 | `sign-image` | (Deprecated) Signs images via Docker Content Trust |
 | `attest-image` | Attests images using GitHub attest-build-provenance |
 | `cosign-image` | Cosigns images via sigstore/cosign |
@@ -120,6 +121,55 @@ This pushes each platform to the **same final tag**, saves the digest as a GitHu
 
 ---
 
+## Multi-Registry with Mirroring
+
+For workflows that publish to multiple registries, build once to the primary registry, then mirror to secondary registries. Avoids rebuilding the same image.
+
+```yaml
+jobs:
+  # ... build-platforms and merge-dockerhub (same as above)
+
+  mirror-to-ghcr:
+    runs-on: ubuntu-latest
+    needs: [parse, merge-dockerhub]
+    permissions:
+      packages: write
+    steps:
+      - uses: exo-actions/buildDockerImage-action/mirror-image@v1
+        id: mirror
+        with:
+          sourceImage: "exoplatform/example"
+          sourceTag: ${{ needs.parse.outputs.buildTags }}
+          targetRegistry: ghcr.io
+          SOURCE_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          SOURCE_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          TARGET_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          TARGET_PASSWORD: ${{ secrets.GHCR_TOKEN }}
+
+  cosign-ghcr:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    needs: mirror-to-ghcr
+    steps:
+      - uses: exo-actions/buildDockerImage-action/cosign-image@v1
+        with:
+          dockerImage: "exoplatform/example"
+          dockerImageTag: ${{ needs.mirror-to-ghcr.outputs.tagsJson }}
+          dockerImageDigest: ${{ needs.mirror-to-ghcr.outputs.digest }}
+          dockerRegistry: ghcr.io
+          cosignImage: true
+          cosignOidcImage: true
+          DOCKER_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.GHCR_TOKEN }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+```
+
+`mirror-image` uses `crane copy` to transfer the full multi-arch image (all platforms + annotations) between registries.
+
+---
+
 ## Inputs
 
 ### build-and-push-image
@@ -146,11 +196,29 @@ This pushes each platform to the **same final tag**, saves the digest as a GitHu
 | Name | Description | Default |
 |---|---|---|
 | `dockerImage` | Docker image name | *(required)* |
-| `dockerImageTag` | Final multi-arch tag | *(required)* |
+| `dockerImageTag` | Final multi-arch tag (comma-separated for multiple) | *(required)* |
 | `dockerRegistry` | Docker registry | `docker.io` |
 | `digestsDir` | Directory containing `*.digest` files (one per platform) | *(required)* |
+| `annotations` | OCI annotations for the merged manifest (multi-line, `key=value`) | `""` |
 | `DOCKER_USERNAME` | Registry username | *(required)* |
 | `DOCKER_PASSWORD` | Registry password | *(required)* |
+
+### mirror-image
+
+| Name | Description | Default |
+|---|---|---|
+| `sourceImage` | Source image name | *(required)* |
+| `sourceTag` | Source tag(s) (comma-separated for multiple) | *(required)* |
+| `sourceRegistry` | Source registry | `docker.io` |
+| `targetImage` | Target image name (defaults to `sourceImage`) | `""` |
+| `targetTag` | Target tag(s) (defaults to `sourceTag`) | `""` |
+| `targetRegistry` | Target registry | `docker.io` |
+| `SOURCE_USERNAME` | Source registry username | *(required)* |
+| `SOURCE_PASSWORD` | Source registry password | *(required)* |
+| `TARGET_USERNAME` | Target registry username | *(required)* |
+| `TARGET_PASSWORD` | Target registry password | *(required)* |
+
+**Outputs:** `digest` (first tag digest), `tagsJson` (JSON array of mirrored tags)
 
 ### sign-image (deprecated)
 
