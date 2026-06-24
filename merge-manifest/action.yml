@@ -45,7 +45,7 @@ runs:
       run: |
         set -ex
         SOURCES=""
-        ANNOTATION_FLAGS=""
+        ANNOTATION_ARGS=()
 
         for DIGEST_FILE in "${DIGESTS_DIR}"/*.digest; do
           DIGEST=$(cat "${DIGEST_FILE}" | tr -d '\n\r')
@@ -59,12 +59,12 @@ runs:
         fi
 
         while IFS='=' read -r KEY VALUE; do
-          [ -n "${KEY}" ] && ANNOTATION_FLAGS="${ANNOTATION_FLAGS} --annotation \"${KEY}=${VALUE}\""
+          [ -n "${KEY}" ] && ANNOTATION_ARGS+=("--annotation" "${KEY}=${VALUE}")
         done <<< "${ANNOTATIONS}"
 
         for TAG in ${TAGS//,/ }; do
           TARGET="${REGISTRY}/${IMAGE}:${TAG}"
-          docker buildx imagetools create ${ANNOTATION_FLAGS} -t "${TARGET}" ${SOURCES}
+          docker buildx imagetools create "${ANNOTATION_ARGS[@]}" -t "${TARGET}" ${SOURCES}
           echo "✅ Multi-arch image: ${TARGET}"
         done
 branding:
