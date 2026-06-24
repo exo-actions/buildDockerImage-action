@@ -1,0 +1,98 @@
+name: Mirror image between registries
+description: 'Copy a multi-arch image from one registry to another using crane, preserving all platforms and annotations'
+inputs:
+  sourceRegistry:
+    description: Source registry
+    default: "docker.io"
+    required: false
+  sourceImage:
+    description: Source image name
+    required: true
+  sourceTag:
+    description: Source tag (comma-separated for multiple)
+    required: true
+  targetRegistry:
+    description: Target registry
+    default: "docker.io"
+    required: false
+  targetImage:
+    description: Target image name (defaults to sourceImage)
+    required: false
+    default: ""
+  targetTag:
+    description: Target tag (defaults to sourceTag)
+    required: false
+    default: ""
+  SOURCE_USERNAME:
+    description: Source registry username
+    required: true
+  SOURCE_PASSWORD:
+    description: Source registry password
+    required: true
+  TARGET_USERNAME:
+    description: Target registry username
+    required: true
+  TARGET_PASSWORD:
+    description: Target registry password
+    required: true
+outputs:
+  digest:
+    description: 'Digest of the mirrored image (first tag)'
+    value: ${{ steps.mirror.outputs.digest }}
+  tagsJson:
+    description: 'Mirrored tags as JSON array'
+    value: ${{ steps.tags-json.outputs.tags }}
+runs:
+  using: "composite"
+  steps:
+    - name: Log in to source registry
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.sourceRegistry }}
+        username: ${{ inputs.SOURCE_USERNAME }}
+        password: ${{ inputs.SOURCE_PASSWORD }}
+    - name: Log in to target registry
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.targetRegistry }}
+        username: ${{ inputs.TARGET_USERNAME }}
+        password: ${{ inputs.TARGET_PASSWORD }}
+    - name: Mirror image
+      id: mirror
+      shell: bash
+      env:
+        SRC_REGISTRY: ${{ inputs.sourceRegistry }}
+        SRC_IMAGE: ${{ inputs.sourceImage }}
+        SRC_TAGS: ${{ inputs.sourceTag }}
+        TGT_REGISTRY: ${{ inputs.targetRegistry }}
+        TGT_IMAGE: ${{ inputs.targetImage }}
+        TGT_TAGS: ${{ inputs.targetTag }}
+      run: |
+        set -ex
+        TARGET_IMAGE="${TGT_IMAGE:-${SRC_IMAGE}}"
+        TARGET_TAGS="${TGT_TAGS:-${SRC_TAGS}}"
+
+        for TAG in ${SRC_TAGS//,/ }; do
+          SRC="${SRC_REGISTRY}/${SRC_IMAGE}:${TAG}"
+          TGT="${TGT_REGISTRY}/${TARGET_IMAGE}:${TAG}"
+          echo "Mirroring ${SRC} → ${TGT}"
+          docker run --rm \
+            -v ${HOME}/.docker/config.json:/root/.docker/config.json:ro \
+            gcr.io/go-containerregistry/crane:debug copy "${SRC}" "${TGT}"
+        done
+
+        FIRST_TAG=$(echo "${TARGET_TAGS}" | cut -d, -f1)
+        DIGEST=$(docker buildx imagetools inspect "${TGT_REGISTRY}/${TARGET_IMAGE}:${FIRST_TAG}" --format '{{.Manifest.Digest}}')
+        echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+        echo "✅ Mirrored: ${TGT_REGISTRY}/${TARGET_IMAGE} (${TARGET_TAGS})"
+    - name: Output tags as JSON
+      id: tags-json
+      shell: bash
+      env:
+        TAGS: ${{ inputs.targetTag }}
+        SRC_TAGS: ${{ inputs.sourceTag }}
+      run: |
+        echo "tags=$(echo ${TAGS:-${SRC_TAGS}} | sed 's/,/\n/g' | jq --raw-input | jq --slurp -c)" >> $GITHUB_OUTPUT
+branding:
+  icon: "copy"
+  color: "purple"
