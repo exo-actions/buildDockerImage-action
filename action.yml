@@ -79,6 +79,18 @@ inputs:
       description: Cosign Signing Private Key Passphrase
       default: "false"
       required: false 
+    buildArgs:
+      description: "List of build-time arguments (multi-line, KEY=VALUE)"
+      required: false
+      default: ""
+    push:
+      description: "Push the image to registry (set to false for validation-only builds)"
+      required: false
+      default: "true"
+    qemu:
+      description: "Set up QEMU for cross-platform emulation (disable if all platforms are native)"
+      required: false
+      default: "true"
 runs:
   using: "composite"  
   steps:
@@ -94,6 +106,9 @@ runs:
         generateProvenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
         labels: ${{ inputs.labels }}
+        buildArgs: ${{ inputs.buildArgs }}
+        push: ${{ inputs.push }}
+        qemu: ${{ inputs.qemu }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
     - name: sign docker image

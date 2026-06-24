@@ -1,0 +1,60 @@
+name: Merge multi-arch manifest
+description: 'Merge single-platform images (pushed to the same tag) into a multi-arch manifest list by digest'
+inputs:
+  dockerImage:
+    description: Docker Image name
+    required: true
+  dockerImageTag:
+    description: Final tag for the merged multi-arch image
+    required: true
+  dockerRegistry:
+    description: Docker registry
+    default: "docker.io"
+    required: false
+  digestsDir:
+    description: "Directory containing *.digest files (one per platform, each containing a single digest)"
+    required: true
+  DOCKER_USERNAME:
+    description: Docker Registry username
+    required: true
+  DOCKER_PASSWORD:
+    description: Docker Registry user password
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Log in to Docker Registry
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.dockerRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+
+    - name: Create multi-arch manifest from digests
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.dockerRegistry }}
+        IMAGE: ${{ inputs.dockerImage }}
+        TAG: ${{ inputs.dockerImageTag }}
+        DIGESTS_DIR: ${{ inputs.digestsDir }}
+      run: |
+        set -ex
+        TARGET="${REGISTRY}/${IMAGE}:${TAG}"
+        SOURCES=""
+
+        for DIGEST_FILE in "${DIGESTS_DIR}"/*.digest; do
+          DIGEST=$(cat "${DIGEST_FILE}" | tr -d '\n\r')
+          echo "  ${DIGEST_FILE} → ${DIGEST}"
+          SOURCES="${SOURCES} ${REGISTRY}/${IMAGE}@${DIGEST}"
+        done
+
+        if [ -z "${SOURCES}" ]; then
+          echo "❌ No digest files found in ${DIGESTS_DIR}"
+          exit 1
+        fi
+
+        docker buildx imagetools create -t "${TARGET}" ${SOURCES}
+        echo "✅ Multi-arch image: ${TARGET}"
+branding:
+  icon: "layers"
+  color: "green"

@@ -39,6 +39,18 @@ inputs:
     description: "OCI annotations for the image (multi-line, key=value)"
     required: false
     default: ""
+  buildArgs:
+    description: "List of build-time arguments (multi-line, KEY=VALUE)"
+    required: false
+    default: ""
+  push:
+    description: "Push the image to registry (set to false for validation-only builds)"
+    required: false
+    default: "true"
+  qemu:
+    description: "Set up QEMU for cross-platform emulation (disable if all platforms are native)"
+    required: false
+    default: "true"
   DOCKER_PASSWORD:
     description: Docker Registry user password
     required: true
@@ -61,6 +73,7 @@ runs:
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
     - name: Set up QEMU
+      if: ${{ inputs.qemu == 'true' }}
       uses: docker/setup-qemu-action@v4
       with:
         platforms: ${{ inputs.platforms }}
@@ -89,15 +102,17 @@ runs:
       uses: docker/build-push-action@v7
       with:
         context: ${{ inputs.dockerFileContext }}
-        push: true
+        push: ${{ inputs.push }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         annotations: ${{ steps.meta.outputs.annotations }}
         sbom: ${{ inputs.generateSBOM }}
         provenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        build-args: ${{ inputs.buildArgs }}
+        network: host
+        cache-from: type=gha,scope=${{ inputs.dockerImage }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.dockerImage }}
     - name: Build Json array of tags for Docker Signing
       shell: bash
       id: additional-jsontags

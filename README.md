@@ -1,16 +1,26 @@
 # buildDockerImage-action
-Action for Docker image build and sign
+Action for Docker image build, sign, attest, cosign, and multi-arch manifest merging.
 
+## Sub-actions
 
-## Basic Usage example:
+| Action | Description |
+|---|---|
+| `build-and-push-image` | Builds and pushes Docker images with BuildKit, cache, SBOM, provenance |
+| `merge-manifest` | Creates a multi-arch manifest list from single-platform images by digest |
+| `sign-image` | (Deprecated) Signs images via Docker Content Trust |
+| `attest-image` | Attests images using GitHub attest-build-provenance |
+| `cosign-image` | Cosigns images via sigstore/cosign |
+
+---
+
+## Basic Usage (single arch)
 
 ```yaml
-name: Create and publish a Docker image v1
+name: Create and publish a Docker image
 
 on:
   push:
-    tags:
-      - '*'
+    tags: ['*']
     branches: ['master']
 env:
   BRANCH_BUILD_TAGS: "latest"
@@ -25,168 +35,160 @@ jobs:
         id: detect-push-event
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo "This is a tag push (${GITHUB_REF#refs/tags/})"
-            echo "Building docker tag: ${GITHUB_REF#refs/tags/}"
             echo "buildTags=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           elif [[ $GITHUB_REF == refs/heads/* ]]; then
-            echo "This is a branch push (${GITHUB_REF#refs/heads/})"
-            echo "Building docker tags: ${{ env.BRANCH_BUILD_TAGS }}"
             echo "buildTags=${{ env.BRANCH_BUILD_TAGS }}" >> $GITHUB_OUTPUT
-          else
-            echo "Unknown push type"
-            exit 1
           fi
-  build-dockerhub-image:
-    permissions:
-        contents: read
-        packages: write
-        id-token: write
-        attestations: write
-    name: "Build Docker Images and push them to DockerHub Registry"
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      tags: ${{ steps.build-docker-image.outputs.tags }}
-      digest: ${{ steps.build-docker-image.outputs.digest }}
-    timeout-minutes: 120
     needs: parse-docker-build-env
     steps:
-      - name: build docker image
-        uses: exo-actions/buildDockerImage-action/build-and-push-image@v1 
-        id: build-docker-image
+      - uses: exo-actions/buildDockerImage-action/build-and-push-image@v1
         with:
-          dockerImage: "exoplatform/exo-community"
-          dockerImageTag: ${{ needs.parse-docker-build-env.outputs.buildTags }} 
+          dockerImage: "exoplatform/example"
+          dockerImageTag: ${{ needs.parse-docker-build-env.outputs.buildTags }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-
-  sign-dockerhub-image:
-    permissions:
-        contents: read
-        packages: write
-        id-token: write
-    strategy: 
-      fail-fast: false
-      max-parallel: 1
-      matrix: 
-        tags: ${{ fromJson(needs.build-dockerhub-image.outputs.tags) }}        
-    name: "sign-docker-image"
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: build-dockerhub-image
-    steps:
-      - name: sign docker image
-        uses: exo-actions/buildDockerImage-action/sign-image@v1 
-        id: sign-docker-image
-        with:
-          dockerImage: "exoplatform/exo-community"          
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOCKER_PRIVATE_KEY_ID: ${{secrets.DOCKER_PRIVATE_KEY_ID}}
-          DOCKER_PRIVATE_KEY: ${{secrets.DOCKER_PRIVATE_KEY}}
-          DOCKER_PRIVATE_KEY_PASSPHRASE: ${{secrets.DOCKER_PRIVATE_KEY_PASSPHRASE}}
-
-  attest-dockerhub-image:
-    permissions:
-        contents: read
-        packages: write
-        id-token: write
-        attestations: write
-    name: "attest-docker-image"
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: build-dockerhub-image
-    steps:
-      - name: attest docker image
-        uses: exo-actions/buildDockerImage-action/attest-image@v1 
-        id: attest-docker-image
-        with:
-          dockerImage: "exoplatform/exo-community"
-          dockerImageDigest: ${{ needs.build-dockerhub-image.outputs.digest }} 
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          attestImage: "true"
-
-  cosign-dockerhub-image:
-    permissions:
-        contents: read
-        packages: write
-        id-token: write
-        attestations: write
-    name: "cosign-docker-image"
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: build-dockerhub-image
-    steps:
-      - name: attest docker image
-        uses: exo-actions/buildDockerImage-action/cosign-image@v1 
-        id: cosign-docker-image
-        with:
-          dockerImage: "exoplatform/exo-community"
-          dockerImageTag: ${{ needs.build-dockerhub-image.outputs.tags }} 
-          dockerImageDigest: ${{ needs.build-dockerhub-image.outputs.digest }} 
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          cosignImage: "true"
-          cosignOidcImage: "true"
-          COSIGN_PRIVATE_KEY: ${{secrets.COSIGN_PRIVATE_KEY}}
-          COSIGN_PASSWORD: ${{secrets.COSIGN_PASSWORD}}
-          
-    
 ```
+
+---
+
+## Native Multi-Arch Build (no QEMU emulation)
+
+Build amd64 + arm64 in parallel on native runners, then merge into a multi-arch manifest. Zero intermediate tags, no QEMU overhead.
+
+```yaml
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    outputs:
+      buildTags: ${{ steps.parse.outputs.buildTags }}
+    # ... (same tag/branch parsing as above)
+
+  build-platforms:
+    name: "Build ${{ matrix.platform }}"
+    runs-on: ${{ matrix.runner }}
+    needs: parse
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: exo-actions/buildDockerImage-action/build-and-push-image@v1
+        id: build
+        with:
+          dockerImage: "exoplatform/example"
+          dockerImageTag: ${{ needs.parse.outputs.buildTags }}
+          platforms: ${{ matrix.platform }}
+          qemu: "false"
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Save digest
+        run: echo "${{ steps.build.outputs.digest }}" > "/tmp/${{ matrix.arch }}.digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.arch }}-digest
+          path: /tmp/${{ matrix.arch }}.digest
+
+  merge-manifest:
+    runs-on: ubuntu-latest
+    needs: [parse, build-platforms]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: amd64-digest
+          path: /tmp/digests
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64-digest
+          path: /tmp/digests
+      - uses: exo-actions/buildDockerImage-action/merge-manifest@v1
+        with:
+          dockerImage: "exoplatform/example"
+          dockerImageTag: ${{ needs.parse.outputs.buildTags }}
+          digestsDir: /tmp/digests
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+```
+
+This pushes each platform to the **same final tag**, saves the digest as a GitHub artifact, then `merge-manifest` recreates the manifest list from the collected digests. No suffix tags, no registry cleanup.
+
+---
 
 ## Inputs
 
-### build-dockerhub-image
+### build-and-push-image
 
-| Name                 | Description                                                                                          | Default value                    |
-|----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
-| dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``                               |
-| dockerImageTag       | Docker Image tag (comma separated for multiple)                                                      | `latest`                         |
-| dockerFileContext    | Dockerfile Context (Dockerfile location)                                                             | `.`                              |
-| dockerRegistry       | Docker registry (Default)                                                                            | `docker.io`                      |
-| DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |
-| DOCKER_PASSWORD      | Password for the previous username                                                                   | ``                               |
-| generateSBOM         | Flag to generate SBOM for the image                                                                 | `true`                           |
-| generateProvenance   | Flag to generate provenance for the image          
-### sign-dockerhub-image
+| Name | Description | Default |
+|---|---|---|
+| `dockerImage` | Docker image name (e.g. `exoplatform/exo-community`) | *(required)* |
+| `dockerImageTag` | Docker image tag (comma-separated for multiple) | `latest` |
+| `dockerFileContext` | Dockerfile context path | `.` |
+| `dockerRegistry` | Docker registry | `docker.io` |
+| `platforms` | Comma-separated target platforms | `linux/amd64` |
+| `generateSBOM` | Generate SBOM for the image | `true` |
+| `generateProvenance` | Generate provenance for the image | `true` |
+| `buildArgs` | Build-time arguments (multi-line, `KEY=VALUE`) | `""` |
+| `push` | Push the image to registry (set to `false` for validation-only) | `true` |
+| `qemu` | Set up QEMU for cross-platform emulation (disable for native builds) | `true` |
+| `labels` | OCI labels for the image (multi-line, `key=value`) | `""` |
+| `annotations` | OCI annotations for the image (multi-line, `key=value`) | `""` |
+| `DOCKER_USERNAME` | Registry username | *(required)* |
+| `DOCKER_PASSWORD` | Registry password | *(required)* |
 
-| Name                 | Description                                                                                          | Default value                    |
-|----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
-| dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``      (empty)                  |
-| dockerImageTag       | targeted docker image versions (["latest","v1.0"])                                                   | ``      (empty)                  |
-| dockerRegistry       | Docker registry (Default )                                                                           | `docker.io`                      |
-| signImage            | flag to enable/disable signature with DCT (Deprecated)                                               | `true`                           |
-| DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |
-| DOCKER_PASSWORD      | Password for the previous username                                                                   | ``                               |
-| DOCKER_PRIVATE_KEY_ID| Id of the used private key for signature                                                             | ``                               |
-| DOCKER_PRIVATE_KEY   | private key used for signature                                                                       | ``                               |
-| DOCKER_PRIVATE_KEY_PASSPHRASE   | Password of the used private key for signature                                            | ``                               |
+### merge-manifest
 
-### cosign-dockerhub-image
+| Name | Description | Default |
+|---|---|---|
+| `dockerImage` | Docker image name | *(required)* |
+| `dockerImageTag` | Final multi-arch tag | *(required)* |
+| `dockerRegistry` | Docker registry | `docker.io` |
+| `digestsDir` | Directory containing `*.digest` files (one per platform) | *(required)* |
+| `DOCKER_USERNAME` | Registry username | *(required)* |
+| `DOCKER_PASSWORD` | Registry password | *(required)* |
 
-| Name                 | Description                                                                                          | Default value                    |
-|----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
-| dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``      (empty)                  |
-| dockerImageTag       | targeted docker image versions (["latest","v1.0"])                                                   | ``      (empty)                  |
-| dockerRegistry       | Docker registry (Default )                                                                           | `docker.io`                      |
-| signImage            | flag to enable/disable signature                                                                     | `true`                           |
-| DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |
-| DOCKER_PASSWORD      | Password for the previous username                                                                   | ``                               |
-| DOCKER_PRIVATE_KEY_ID| Id of the used private key for signature                                                             | ``                               |
-| DOCKER_PRIVATE_KEY   | private key used for signature                                                                       | ``                               |
-| DOCKER_PRIVATE_KEY_PASSPHRASE   | Password of the used private key for signature                                            | ``                               |
+### sign-image (deprecated)
 
-### attest-dockerhub-image
+| Name | Description | Default |
+|---|---|---|
+| `dockerImage` | Docker image name | *(required)* |
+| `dockerImageTag` | Image tags as JSON array (e.g. `["latest","v1.0"]`) | `""` |
+| `dockerRegistry` | Docker registry | `docker.io` |
+| `signImage` | Enable/disable DCT signing | `true` |
+| `DOCKER_USERNAME` | Registry username | *(required)* |
+| `DOCKER_PASSWORD` | Registry password | *(required)* |
+| `DOCKER_PRIVATE_KEY_ID` | Private key ID for DCT | `""` |
+| `DOCKER_PRIVATE_KEY` | Private key for DCT | `""` |
+| `DOCKER_PRIVATE_KEY_PASSPHRASE` | Passphrase for the private key | `""` |
 
-| Name                 | Description                                                                                          | Default value                    |
-|----------------------|------------------------------------------------------------------------------------------------------|----------------------------------|
-| dockerImage          | targeted docker image (exoplatform/exo-community,...)                                                | ``      (empty)                  |
-| dockerImageTag       | Docker Image tags (matrix)                                                                           | `"[latest]"`                     |
-| dockerImageDigest    | Digest of the docker image to attest (example: sha256:15695b16b1dc0bec528e2111c678d21194651613caccc8b452253c530b204459)|`` (empty)      |
-| dockerRegistry       | Docker registry (Default )                                                                           | `docker.io`                      |
-| DOCKER_USERNAME      | Username allowed to access and push on docker registry                                               | ``                               |
-| DOCKER_PASSWORD      | Password for the previous username                                                                   | ``                               |
-| cosignImage          | Enable Docker Image Signing (Cosign)                                                                 | `false`                          |
-| cosignOidcImage      | Enable Docker Image Signing (Cosign) with Github OIDC Token                                          | `false`                          |
-| COSIGN_PRIVATE_KEY   | Cosign Signing Private Key                                                                           | ``(empty)                        |
-| COSIGN_PASSWORD      | Cosign Signing Private Key Passphrase                                                                | ``(empty)                        |
+### cosign-image
+
+| Name | Description | Default |
+|---|---|---|
+| `dockerImage` | Docker image name | *(required)* |
+| `dockerImageTag` | Image tags as JSON array | `""` |
+| `dockerImageDigest` | Image digest to cosign | `""` |
+| `dockerRegistry` | Docker registry | `docker.io` |
+| `cosignImage` | Enable Cosign signing | `false` |
+| `cosignOidcImage` | Enable Cosign with GitHub OIDC token | `false` |
+| `DOCKER_USERNAME` | Registry username | *(required)* |
+| `DOCKER_PASSWORD` | Registry password | *(required)* |
+| `COSIGN_PRIVATE_KEY` | Cosign signing private key | `""` |
+| `COSIGN_PASSWORD` | Cosign private key passphrase | `""` |
+
+### attest-image
+
+| Name | Description | Default |
+|---|---|---|
+| `dockerImage` | Docker image name | *(required)* |
+| `dockerImageDigest` | Digest of the image to attest | `""` |
+| `dockerRegistry` | Docker registry | `docker.io` |
+| `attestImage` | Enable attestation | `false` |
+| `attestImageRegistry` | Registry for attestation | `docker.io` |
+| `DOCKER_USERNAME` | Registry username | *(required)* |
+| `DOCKER_PASSWORD` | Registry password | *(required)* |
