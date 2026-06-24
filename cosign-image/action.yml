@@ -46,7 +46,7 @@ runs:
         password: ${{ inputs.DOCKER_PASSWORD }}
     - name: Install Cosign
       if: ${{ inputs.cosignImage == 'true' }}
-      uses: sigstore/cosign-installer@v4.1.1
+      uses: sigstore/cosign-installer@v4.1.2
     - name: Sign the published ghcr.io Docker image with Cosign
       if: ${{ inputs.cosignImage == 'true' }}
       shell: bash

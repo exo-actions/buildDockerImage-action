@@ -65,7 +65,7 @@ runs:
   using: "composite"
   steps:
     - name: Checkout repository
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
     - name: Log in to Docker Registry
       uses: docker/login-action@v4
       with:
@@ -83,7 +83,7 @@ runs:
         driver: docker-container
     - name: Build list of additional tags
       id: additional-tags
-      uses: actions/github-script@v8
+      uses: actions/github-script@v9
       with:
         script: |
           core.setOutput('tags', `${{ inputs.dockerImageTag }}`.split(",").join("\n"))
