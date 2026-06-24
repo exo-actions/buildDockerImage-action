@@ -60,7 +60,7 @@ runs:
 
         while IFS='=' read -r KEY VALUE; do
           [ -n "${KEY}" ] && ANNOTATION_ARGS+=("--annotation" "${KEY}=${VALUE}")
-        done <<< "${ANNOTATIONS}"
+        done <<< "$(printf '%s\n' "${ANNOTATIONS}" | grep -v '^$')"
 
         for TAG in ${TAGS//,/ }; do
           TARGET="${REGISTRY}/${IMAGE}:${TAG}"
