@@ -1,0 +1,114 @@
+name: Self-test composite actions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.build.outputs.tags }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Write a trivial Dockerfile
+        run: |
+          mkdir -p /tmp/selftest
+          cat > /tmp/selftest/Dockerfile <<'EOF'
+          FROM alpine:3.20
+          CMD ["true"]
+          EOF
+      - name: Build and push self-test image
+        id: build
+        uses: ./build-and-push-image
+        with:
+          dockerImage: ${{ github.repository }}-selftest
+          dockerImageTag: ci-${{ github.run_id }}
+          dockerFileContext: /tmp/selftest
+          dockerRegistry: ghcr.io
+          qemu: "false"
+          DOCKER_USERNAME: ${{ github.actor }}
+          DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  attest-and-cosign:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Attest the self-test image
+        uses: ./attest-image
+        with:
+          dockerImage: ${{ github.repository }}-selftest
+          dockerImageDigest: ${{ needs.build.outputs.digest }}
+          dockerRegistry: ghcr.io
+          attestImageRegistry: ghcr.io
+          attestImage: "true"
+          attestSBOM: "true"
+          DOCKER_USERNAME: ${{ github.actor }}
+          DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cosign (keyless) the self-test image
+        uses: ./cosign-image
+        with:
+          dockerImage: ${{ github.repository }}-selftest
+          dockerImageTag: ${{ needs.build.outputs.tags }}
+          dockerImageDigest: ${{ needs.build.outputs.digest }}
+          dockerRegistry: ghcr.io
+          cosignOidcImage: "true"
+          DOCKER_USERNAME: ${{ github.actor }}
+          DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  mirror:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Mirror the self-test image within ghcr.io
+        uses: ./mirror-image
+        with:
+          sourceImage: ${{ github.repository }}-selftest
+          sourceTag: ci-${{ github.run_id }}
+          sourceRegistry: ghcr.io
+          targetImage: ${{ github.repository }}-selftest-mirrored
+          targetRegistry: ghcr.io
+          SOURCE_USERNAME: ${{ github.actor }}
+          SOURCE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_USERNAME: ${{ github.actor }}
+          TARGET_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  merge-manifest:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Fake a two-platform digest set from the single built image
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ needs.build.outputs.digest }}" > /tmp/digests/amd64.digest
+          echo "${{ needs.build.outputs.digest }}" > /tmp/digests/arm64.digest
+      - name: Merge manifest
+        id: merge
+        uses: ./merge-manifest
+        with:
+          dockerImage: ${{ github.repository }}-selftest
+          dockerImageTag: ci-merged-${{ github.run_id }}
+          dockerRegistry: ghcr.io
+          digestsDir: /tmp/digests
+          DOCKER_USERNAME: ${{ github.actor }}
+          DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check digest output was produced
+        run: |
+          if [ -z "${{ steps.merge.outputs.digest }}" ]; then
+            echo "❌ merge-manifest produced no digest output"
+            exit 1
+          fi
+          echo "✅ merged digest: ${{ steps.merge.outputs.digest }}"

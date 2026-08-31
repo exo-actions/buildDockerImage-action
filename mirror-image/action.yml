@@ -78,7 +78,7 @@ runs:
           echo "Mirroring ${SRC} → ${TGT}"
           docker run --rm \
             -v ${HOME}/.docker/config.json:/root/.docker/config.json:ro \
-            gcr.io/go-containerregistry/crane:debug copy "${SRC}" "${TGT}"
+            gcr.io/go-containerregistry/crane:v0.22.0 copy "${SRC}" "${TGT}"
         done
 
         FIRST_TAG=$(echo "${TARGET_TAGS}" | cut -d, -f1)

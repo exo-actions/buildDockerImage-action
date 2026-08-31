@@ -25,11 +25,15 @@ inputs:
     description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
     required: false
     default: "false"
+  attestSBOM:
+    description: "Also generate an SBOM for the image and attest it with Github (attestations and id-token write permissions must be provided)"
+    required: false
+    default: "false"
 runs:
-  using: "composite" 
+  using: "composite"
   steps:
     - name: Log in to Docker Registry
-      if: ${{ inputs.attestImage == 'true' }}
+      if: ${{ inputs.attestImage == 'true' || inputs.attestSBOM == 'true' }}
       uses: docker/login-action@v4
       with:
         registry: ${{ inputs.dockerRegistry }}
@@ -37,7 +41,7 @@ runs:
         password: ${{ inputs.DOCKER_PASSWORD }}
     - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
       shell: bash
-      if: ${{ inputs.attestImage == 'true' }}
+      if: ${{ inputs.attestImage == 'true' || inputs.attestSBOM == 'true' }}
       run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
     - name: Attest the publised Docker image with Github
       if: ${{ inputs.attestImage == 'true' }}
@@ -46,6 +50,23 @@ runs:
       with:
         subject-name: ${{ inputs.attestImageRegistry }}/${{ inputs.dockerImage }}
         subject-digest: ${{ inputs.dockerImageDigest }}
+        push-to-registry: true
+    - name: Generate SBOM for the image
+      if: ${{ inputs.attestSBOM == 'true' }}
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
+        format: spdx-json
+        output-file: /tmp/sbom.spdx.json
+        upload-artifact: false
+    - name: Attest the SBOM with Github
+      if: ${{ inputs.attestSBOM == 'true' }}
+      uses: actions/attest-sbom@v4
+      id: attest-sbom
+      with:
+        subject-name: ${{ inputs.attestImageRegistry }}/${{ inputs.dockerImage }}
+        subject-digest: ${{ inputs.dockerImageDigest }}
+        sbom-path: /tmp/sbom.spdx.json
         push-to-registry: true
 branding:
   icon: "anchor"
