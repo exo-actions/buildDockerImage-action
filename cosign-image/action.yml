@@ -39,9 +39,9 @@ inputs:
     required: false
     default: ""
   verifyImage:
-    description: "Run 'cosign verify' against each signed tag after signing"
+    description: "Run 'cosign verify' against each signed tag after signing. Opt-in only: if the same digest was ever previously signed by another method (e.g. mixing cosignImage and cosignOidcImage across runs on a reused tag), Sigstore's transparency log may carry a signature of a different type that makes verification of an otherwise-valid signature fail"
     required: false
-    default: "true"
+    default: "false"
 runs:
   using: "composite"  
   steps:

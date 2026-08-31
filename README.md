@@ -254,7 +254,7 @@ jobs:
 | `dockerRegistry` | Docker registry | `docker.io` |
 | `cosignImage` | Enable Cosign signing | `false` |
 | `cosignOidcImage` | Enable Cosign with GitHub OIDC token | `false` |
-| `verifyImage` | Run `cosign verify` against each signed tag right after signing | `true` |
+| `verifyImage` | Run `cosign verify` against each signed tag right after signing. Opt-in: unsafe to enable if the same digest is ever signed by both `cosignImage` and `cosignOidcImage` across runs on a reused tag, since Sigstore's transparency log then carries mixed signature types and verification can false-positive-fail | `false` |
 | `DOCKER_USERNAME` | Registry username | *(required)* |
 | `DOCKER_PASSWORD` | Registry password | *(required)* |
 | `COSIGN_PRIVATE_KEY` | Cosign signing private key | `""` |
