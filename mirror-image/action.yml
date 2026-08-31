@@ -76,7 +76,7 @@ runs:
           SRC="${SRC_REGISTRY}/${SRC_IMAGE}:${TAG}"
           TGT="${TGT_REGISTRY}/${TARGET_IMAGE}:${TAG}"
           echo "Mirroring ${SRC} → ${TGT}"
-          docker run --rm \
+          docker run --rm --user 0:0 \
             -v ${HOME}/.docker/config.json:/root/.docker/config.json:ro \
             gcr.io/go-containerregistry/crane:v0.22.0 copy "${SRC}" "${TGT}"
         done
