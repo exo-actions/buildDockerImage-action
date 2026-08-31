@@ -12,6 +12,18 @@ inputs:
     description: Dockerfile Context
     default: "."
     required: false
+  dockerFile:
+    description: "Path to the Dockerfile (relative to the current directory, defaults to '{context}/Dockerfile')"
+    required: false
+    default: ""
+  target:
+    description: "Target build stage for a multi-stage Dockerfile"
+    required: false
+    default: ""
+  buildContexts:
+    description: "Additional named build contexts (multi-line, name=path)"
+    required: false
+    default: ""
   dockerRegistry:
     description: Docker registry (Default docker.io)
     default: "docker.io"
@@ -51,6 +63,22 @@ inputs:
     description: "Set up QEMU for cross-platform emulation (disable if all platforms are native)"
     required: false
     default: "true"
+  secrets:
+    description: "Build secrets (multi-line, id=value), exposed to RUN --mount=type=secret,id=<id>"
+    required: false
+    default: ""
+  secretFiles:
+    description: "Build secrets sourced from files (multi-line, id=path)"
+    required: false
+    default: ""
+  cacheFrom:
+    description: "Cache source(s) for docker/build-push-action (multi-line). Defaults to the GitHub Actions cache scoped to dockerImage"
+    required: false
+    default: ""
+  cacheTo:
+    description: "Cache destination(s) for docker/build-push-action (multi-line). Defaults to the GitHub Actions cache scoped to dockerImage"
+    required: false
+    default: ""
   DOCKER_PASSWORD:
     description: Docker Registry user password
     required: true
@@ -97,11 +125,33 @@ runs:
         labels: ${{ inputs.labels }}
         annotations: ${{ inputs.annotations }}
 
+    - name: Resolve default cache backend
+      id: cache
+      shell: bash
+      env:
+        CACHE_FROM: ${{ inputs.cacheFrom }}
+        CACHE_TO: ${{ inputs.cacheTo }}
+        IMAGE: ${{ inputs.dockerImage }}
+      run: |
+        DELIM="EOF_$(date +%s%N)"
+        {
+          echo "from<<${DELIM}"
+          if [ -n "${CACHE_FROM}" ]; then echo "${CACHE_FROM}"; else echo "type=gha,scope=${IMAGE}"; fi
+          echo "${DELIM}"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "to<<${DELIM}"
+          if [ -n "${CACHE_TO}" ]; then echo "${CACHE_TO}"; else echo "type=gha,mode=max,scope=${IMAGE}"; fi
+          echo "${DELIM}"
+        } >> "$GITHUB_OUTPUT"
     - name: Build and push Docker image to Registry
       id: push
       uses: docker/build-push-action@v7
       with:
         context: ${{ inputs.dockerFileContext }}
+        file: ${{ inputs.dockerFile }}
+        target: ${{ inputs.target }}
+        build-contexts: ${{ inputs.buildContexts }}
         push: ${{ inputs.push }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
@@ -110,9 +160,11 @@ runs:
         provenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
         build-args: ${{ inputs.buildArgs }}
+        secrets: ${{ inputs.secrets }}
+        secret-files: ${{ inputs.secretFiles }}
         network: host
-        cache-from: type=gha,scope=${{ inputs.dockerImage }}
-        cache-to: type=gha,mode=max,scope=${{ inputs.dockerImage }}
+        cache-from: ${{ steps.cache.outputs.from }}
+        cache-to: ${{ steps.cache.outputs.to }}
     - name: Build Json array of tags for Docker Signing
       shell: bash
       id: additional-jsontags

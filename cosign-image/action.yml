@@ -34,6 +34,14 @@ inputs:
   COSIGN_PASSWORD:
     description: Cosign Signing Private Key Passphrase
     required: false
+  COSIGN_KEY_REF:
+    description: "KMS-backed signing key reference (e.g. awskms://, gcpkms://, azurekms://, hashivault://). Takes precedence over COSIGN_PRIVATE_KEY when set"
+    required: false
+    default: ""
+  verifyImage:
+    description: "Run 'cosign verify' against each signed tag after signing"
+    required: false
+    default: "true"
 runs:
   using: "composite"  
   steps:
@@ -57,10 +65,32 @@ runs:
           images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
           docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST}
         done
-        cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${images}
+        cosign sign --yes --key "${COSIGN_KEY_REF:-env://COSIGN_PRIVATE_KEY}" ${images}
       env:
         COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
         COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
+        COSIGN_KEY_REF: ${{ inputs.COSIGN_KEY_REF }}
+        DIGEST: ${{ inputs.dockerImageDigest }}
+        TAGS: ${{ inputs.dockerImageTag }}
+    - name: Verify the Cosign key-based signature
+      if: ${{ inputs.cosignImage == 'true' && inputs.verifyImage == 'true' }}
+      shell: bash
+      run: |
+        images=""
+        TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
+        for tag in ${TAGS_LIST}; do
+          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+        done
+        if [ -n "${COSIGN_KEY_REF}" ]; then
+          cosign verify --key "${COSIGN_KEY_REF}" ${images}
+        else
+          cosign public-key --key env://COSIGN_PRIVATE_KEY > /tmp/cosign.pub
+          cosign verify --key /tmp/cosign.pub ${images}
+        fi
+      env:
+        COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
+        COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
+        COSIGN_KEY_REF: ${{ inputs.COSIGN_KEY_REF }}
         DIGEST: ${{ inputs.dockerImageDigest }}
         TAGS: ${{ inputs.dockerImageTag }}
     - name: Sign the published ghcr.io Docker image with GitHub OIDC Token
@@ -76,6 +106,23 @@ runs:
       env:
         DIGEST: ${{ inputs.dockerImageDigest }}
         TAGS: ${{ inputs.dockerImageTag }}
+    - name: Verify the Cosign keyless (OIDC) signature
+      if: ${{ inputs.cosignOidcImage == 'true' && inputs.verifyImage == 'true' }}
+      shell: bash
+      run: |
+        images=""
+        TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
+        for tag in ${TAGS_LIST}; do
+          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+        done
+        cosign verify \
+          --certificate-identity-regexp "^https://github.com/${GITHUB_REPO}/" \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+          ${images}
+      env:
+        DIGEST: ${{ inputs.dockerImageDigest }}
+        TAGS: ${{ inputs.dockerImageTag }}
+        GITHUB_REPO: ${{ github.repository }}
 branding:
   icon: "anchor"
   color: "gray-dark"

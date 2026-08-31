@@ -13,6 +13,18 @@ inputs:
       description: Dockerfile Context
       default: "."
       required: false
+    dockerFile:
+      description: "Path to the Dockerfile (relative to the current directory, defaults to '{context}/Dockerfile')"
+      required: false
+      default: ""
+    target:
+      description: "Target build stage for a multi-stage Dockerfile"
+      required: false
+      default: ""
+    buildContexts:
+      description: "Additional named build contexts (multi-line, name=path)"
+      required: false
+      default: ""
     dockerRegistry:
       description: Docker registry (Default docker.io)
       default: "docker.io"
@@ -45,6 +57,10 @@ inputs:
       description: Enable Docker Image Attestation by Github (attestations and id-token write permissions must be provided)
       default: "false"
       required: false
+    attestSBOM:
+      description: "Also generate an SBOM for the image and attest it with Github (attestations and id-token write permissions must be provided)"
+      default: "false"
+      required: false
     attestImageRegistry:
       description: Docker Image Registry for Attestation by Github (default docker.io)
       required: false
@@ -67,6 +83,14 @@ inputs:
     COSIGN_PRIVATE_KEY:
       description: Cosign Signing Private Key
       required: false
+    COSIGN_KEY_REF:
+      description: "KMS-backed signing key reference (e.g. awskms://, gcpkms://, azurekms://, hashivault://). Takes precedence over COSIGN_PRIVATE_KEY when set"
+      required: false
+      default: ""
+    verifyImage:
+      description: "Run 'cosign verify' against each signed tag after signing"
+      required: false
+      default: "true"
     labels:
       description: "OCI labels for the image (multi-line, key=value)"
       required: false
@@ -91,6 +115,32 @@ inputs:
       description: "Set up QEMU for cross-platform emulation (disable if all platforms are native)"
       required: false
       default: "true"
+    secrets:
+      description: "Build secrets (multi-line, id=value), exposed to RUN --mount=type=secret,id=<id>"
+      required: false
+      default: ""
+    secretFiles:
+      description: "Build secrets sourced from files (multi-line, id=path)"
+      required: false
+      default: ""
+    cacheFrom:
+      description: "Cache source(s) for docker/build-push-action (multi-line). Defaults to the GitHub Actions cache scoped to dockerImage"
+      required: false
+      default: ""
+    cacheTo:
+      description: "Cache destination(s) for docker/build-push-action (multi-line). Defaults to the GitHub Actions cache scoped to dockerImage"
+      required: false
+      default: ""
+    mirrorTargetRegistry:
+      description: "If set, mirror the built image to this registry after build (uses mirror-image)"
+      required: false
+      default: ""
+    MIRROR_TARGET_USERNAME:
+      description: Target registry username for mirroring (required if mirrorTargetRegistry is set)
+      required: false
+    MIRROR_TARGET_PASSWORD:
+      description: Target registry password for mirroring (required if mirrorTargetRegistry is set)
+      required: false
 runs:
   using: "composite"  
   steps:
@@ -102,15 +152,23 @@ runs:
         dockerImageTag: ${{ inputs.dockerImageTag }}
         dockerRegistry: ${{inputs.dockerRegistry}} 
         dockerFileContext: ${{inputs.dockerFileContext}}
+        dockerFile: ${{ inputs.dockerFile }}
+        target: ${{ inputs.target }}
+        buildContexts: ${{ inputs.buildContexts }}
         generateSBOM: ${{ inputs.generateSBOM }}
         generateProvenance: ${{ inputs.generateProvenance }}
         platforms: ${{ inputs.platforms }}
         labels: ${{ inputs.labels }}
+        annotations: ${{ inputs.annotations }}
         buildArgs: ${{ inputs.buildArgs }}
+        secrets: ${{ inputs.secrets }}
+        secretFiles: ${{ inputs.secretFiles }}
+        cacheFrom: ${{ inputs.cacheFrom }}
+        cacheTo: ${{ inputs.cacheTo }}
         push: ${{ inputs.push }}
         qemu: ${{ inputs.qemu }}
         DOCKER_USERNAME: ${{ inputs.DOCKER_USERNAME }}
-        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}            
+        DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
     - name: sign docker image
       uses: exo-actions/buildDockerImage-action/sign-image@v1 
       id: sign-docker-image      
@@ -135,6 +193,7 @@ runs:
         DOCKER_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
         attestImage: ${{inputs.attestImage}}
         attestImageRegistry: ${{inputs.attestImageRegistry}}
+        attestSBOM: ${{inputs.attestSBOM}}
     - name: cosign docker image
       uses: exo-actions/buildDockerImage-action/cosign-image@v1 
       id: cosign-docker-image
@@ -149,6 +208,21 @@ runs:
         cosignOidcImage: ${{inputs.cosignOidcImage}}
         COSIGN_PRIVATE_KEY: ${{inputs.COSIGN_PRIVATE_KEY}}
         COSIGN_PASSWORD: ${{inputs.COSIGN_PASSWORD}}
+        COSIGN_KEY_REF: ${{inputs.COSIGN_KEY_REF}}
+        verifyImage: ${{inputs.verifyImage}}
+    - name: mirror docker image
+      if: ${{ inputs.mirrorTargetRegistry != '' }}
+      uses: exo-actions/buildDockerImage-action/mirror-image@v1
+      id: mirror-docker-image
+      with:
+        sourceImage: ${{ inputs.dockerImage }}
+        sourceTag: ${{ inputs.dockerImageTag }}
+        sourceRegistry: ${{ inputs.dockerRegistry }}
+        targetRegistry: ${{ inputs.mirrorTargetRegistry }}
+        SOURCE_USERNAME: ${{ inputs.DOCKER_USERNAME }}
+        SOURCE_PASSWORD: ${{ inputs.DOCKER_PASSWORD }}
+        TARGET_USERNAME: ${{ inputs.MIRROR_TARGET_USERNAME }}
+        TARGET_PASSWORD: ${{ inputs.MIRROR_TARGET_PASSWORD }}
 branding:
   icon: "anchor"
   color: "gray-dark"

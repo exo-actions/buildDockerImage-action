@@ -9,8 +9,10 @@ Action for Docker image build, sign, attest, cosign, and multi-arch manifest mer
 | `merge-manifest` | Creates a multi-arch manifest list from single-platform images by digest |
 | `mirror-image` | Copies a multi-arch image between registries (all platforms, annotations preserved) |
 | `sign-image` | (Deprecated) Signs images via Docker Content Trust |
-| `attest-image` | Attests images using GitHub attest-build-provenance |
-| `cosign-image` | Cosigns images via sigstore/cosign |
+| `attest-image` | Attests images using GitHub attest-build-provenance and/or attest-sbom |
+| `cosign-image` | Cosigns images via sigstore/cosign, with optional post-sign verification |
+
+There is also a top-level convenience action (`exo-actions/buildDockerImage-action@v1`) that chains `build-and-push-image` → `sign-image` → `attest-image` → `cosign-image`, and optionally `mirror-image` (set `mirrorTargetRegistry` to mirror the freshly built image to another registry in the same job). It accepts the union of those sub-actions' inputs. `merge-manifest` is not part of this chain — the native multi-arch flow below needs a build matrix across jobs, so it must be called as a separate job.
 
 ---
 
@@ -179,11 +181,17 @@ jobs:
 | `dockerImage` | Docker image name (e.g. `exoplatform/exo-community`) | *(required)* |
 | `dockerImageTag` | Docker image tag (comma-separated for multiple) | `latest` |
 | `dockerFileContext` | Dockerfile context path | `.` |
+| `dockerFile` | Path to the Dockerfile (defaults to `{context}/Dockerfile`) | `""` |
+| `target` | Target build stage for a multi-stage Dockerfile | `""` |
+| `buildContexts` | Additional named build contexts (multi-line, `name=path`) | `""` |
 | `dockerRegistry` | Docker registry | `docker.io` |
 | `platforms` | Comma-separated target platforms | `linux/amd64` |
 | `generateSBOM` | Generate SBOM for the image | `true` |
 | `generateProvenance` | Generate provenance for the image | `true` |
 | `buildArgs` | Build-time arguments (multi-line, `KEY=VALUE`) | `""` |
+| `secrets` | Build secrets (multi-line, `id=value`), exposed to `RUN --mount=type=secret,id=<id>` | `""` |
+| `secretFiles` | Build secrets sourced from files (multi-line, `id=path`) | `""` |
+| `cacheFrom` / `cacheTo` | Cache backend for `docker/build-push-action` (multi-line). Defaults to the GitHub Actions cache scoped to `dockerImage` | `""` (→ `type=gha`) |
 | `push` | Push the image to registry (set to `false` for validation-only) | `true` |
 | `qemu` | Set up QEMU for cross-platform emulation (disable for native builds) | `true` |
 | `labels` | OCI labels for the image (multi-line, `key=value`) | `""` |
@@ -202,6 +210,8 @@ jobs:
 | `annotations` | OCI annotations for the merged manifest (multi-line, `key=value`) | `""` |
 | `DOCKER_USERNAME` | Registry username | *(required)* |
 | `DOCKER_PASSWORD` | Registry password | *(required)* |
+
+**Outputs:** `digest` (digest of the merged manifest, first tag) — feed this into `attest-image`/`cosign-image` to sign or attest the multi-arch manifest itself.
 
 ### mirror-image
 
@@ -244,10 +254,12 @@ jobs:
 | `dockerRegistry` | Docker registry | `docker.io` |
 | `cosignImage` | Enable Cosign signing | `false` |
 | `cosignOidcImage` | Enable Cosign with GitHub OIDC token | `false` |
+| `verifyImage` | Run `cosign verify` against each signed tag right after signing | `true` |
 | `DOCKER_USERNAME` | Registry username | *(required)* |
 | `DOCKER_PASSWORD` | Registry password | *(required)* |
 | `COSIGN_PRIVATE_KEY` | Cosign signing private key | `""` |
 | `COSIGN_PASSWORD` | Cosign private key passphrase | `""` |
+| `COSIGN_KEY_REF` | KMS-backed key reference (`awskms://`, `gcpkms://`, `azurekms://`, `hashivault://`); takes precedence over `COSIGN_PRIVATE_KEY` | `""` |
 
 ### attest-image
 
@@ -256,7 +268,8 @@ jobs:
 | `dockerImage` | Docker image name | *(required)* |
 | `dockerImageDigest` | Digest of the image to attest | `""` |
 | `dockerRegistry` | Docker registry | `docker.io` |
-| `attestImage` | Enable attestation | `false` |
+| `attestImage` | Enable build-provenance attestation | `false` |
+| `attestSBOM` | Generate an SBOM for the image and attest it with GitHub (needs `attestations`/`id-token` write permissions) | `false` |
 | `attestImageRegistry` | Registry for attestation | `docker.io` |
 | `DOCKER_USERNAME` | Registry username | *(required)* |
 | `DOCKER_PASSWORD` | Registry password | *(required)* |

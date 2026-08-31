@@ -20,6 +20,10 @@ inputs:
   DOCKER_PASSWORD:
     description: Docker Registry user password
     required: true
+outputs:
+  digest:
+    description: 'Digest of the merged multi-arch manifest (first tag)'
+    value: ${{ steps.merge.outputs.digest }}
 runs:
   using: "composite"
   steps:
@@ -31,6 +35,7 @@ runs:
         password: ${{ inputs.DOCKER_PASSWORD }}
 
     - name: Create multi-arch manifest from digests
+      id: merge
       shell: bash
       env:
         REGISTRY: ${{ inputs.dockerRegistry }}
@@ -52,11 +57,16 @@ runs:
           exit 1
         fi
 
+        FIRST_TAG=""
         for TAG in ${TAGS//,/ }; do
           TARGET="${REGISTRY}/${IMAGE}:${TAG}"
           docker buildx imagetools create -t "${TARGET}" ${SOURCES}
           echo "✅ Multi-arch image: ${TARGET}"
+          FIRST_TAG="${FIRST_TAG:-${TAG}}"
         done
+
+        DIGEST=$(docker buildx imagetools inspect "${REGISTRY}/${IMAGE}:${FIRST_TAG}" --format '{{.Manifest.Digest}}')
+        echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 branding:
   icon: "layers"
   color: "green"
