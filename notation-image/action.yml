@@ -1,0 +1,118 @@
+name: Notation sign docker image
+description: 'Sign/verify docker images with the Notary Project (Notation), the CNCF successor to Docker Content Trust. Requires a KMS-backed signing plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...)'
+inputs:
+  dockerImage:
+    description: Docker Image
+    required: true
+  dockerImageDigest:
+    description: Docker Image Digest to sign/verify
+    required: true
+  dockerRegistry:
+    description: Docker registry (Default docker.io)
+    default: "docker.io"
+    required: false
+  DOCKER_USERNAME:
+    description: Docker Registry username
+    required: true
+  DOCKER_PASSWORD:
+    description: Docker Registry user password
+    required: true
+  notationImage:
+    description: Enable Docker Image Signing (Notation)
+    required: false
+    default: "false"
+  notationVersion:
+    description: "Version of the Notation CLI to install"
+    required: false
+    default: "1.3.2"
+  pluginName:
+    description: "Name of the Notation signing plugin (e.g. azure-kv, aws-signer, notation-hashicorp-vault). Required when notationImage is true"
+    required: false
+    default: ""
+  pluginUrl:
+    description: "Download URL of the signing plugin. Required when notationImage is true"
+    required: false
+    default: ""
+  pluginChecksum:
+    description: "SHA256 checksum of the signing plugin. Required when notationImage is true"
+    required: false
+    default: ""
+  keyId:
+    description: "KMS key identifier/ARN/URI for the signing key pair, as expected by the plugin. Required when notationImage is true"
+    required: false
+    default: ""
+  signatureFormat:
+    description: "Signature envelope format: jws or cose"
+    required: false
+    default: "cose"
+  pluginConfig:
+    description: "Plugin-defined config (multi-line, key=value), passed through to the signing plugin"
+    required: false
+    default: ""
+  timestampUrl:
+    description: "RFC 3161 Timestamp Authority (TSA) server URL"
+    required: false
+    default: ""
+  timestampRootCert:
+    description: "Filepath of the RFC 3161 Timestamp Authority (TSA) root certificate. Required when timestampUrl is set"
+    required: false
+    default: ""
+  verifyImage:
+    description: "Run 'notation verify' against the signed digest right after signing. Requires trustPolicy and trustStore to be provided, since Notation verification is always against an explicit trust policy"
+    required: false
+    default: "false"
+  trustPolicy:
+    description: "File path to a Notation trustpolicy.json. Required when verifyImage is true"
+    required: false
+    default: ""
+  trustStore:
+    description: "Directory path to a Notation trust store (x509/ca, x509/signingAuthority, x509/tsa). Required when verifyImage is true"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Log in to Docker Registry
+      if: ${{ inputs.notationImage == 'true' || inputs.verifyImage == 'true' }}
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ inputs.dockerRegistry }}
+        username: ${{ inputs.DOCKER_USERNAME }}
+        password: ${{ inputs.DOCKER_PASSWORD }}
+    - name: Install Notation CLI
+      if: ${{ inputs.notationImage == 'true' || inputs.verifyImage == 'true' }}
+      uses: notaryproject/notation-action/setup@v1
+      with:
+        version: ${{ inputs.notationVersion }}
+    - name: Resolve target artifact reference
+      if: ${{ inputs.notationImage == 'true' || inputs.verifyImage == 'true' }}
+      id: target
+      shell: bash
+      env:
+        DOCKER_REGISTRY: ${{ inputs.dockerRegistry }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
+        DIGEST: ${{ inputs.dockerImageDigest }}
+      run: echo "reference=${DOCKER_REGISTRY}/${DOCKER_IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+    - name: Sign the image with Notation
+      if: ${{ inputs.notationImage == 'true' }}
+      uses: notaryproject/notation-action/sign@v1
+      with:
+        plugin_name: ${{ inputs.pluginName }}
+        plugin_url: ${{ inputs.pluginUrl }}
+        plugin_checksum: ${{ inputs.pluginChecksum }}
+        key_id: ${{ inputs.keyId }}
+        target_artifact_reference: ${{ steps.target.outputs.reference }}
+        signature_format: ${{ inputs.signatureFormat }}
+        plugin_config: ${{ inputs.pluginConfig }}
+        timestamp_url: ${{ inputs.timestampUrl }}
+        timestamp_root_cert: ${{ inputs.timestampRootCert }}
+    - name: Verify the Notation signature
+      if: ${{ inputs.verifyImage == 'true' }}
+      uses: notaryproject/notation-action/verify@v1
+      with:
+        target_artifact_reference: ${{ steps.target.outputs.reference }}
+        trust_policy: ${{ inputs.trustPolicy }}
+        trust_store: ${{ inputs.trustStore }}
+branding:
+  icon: "shield"
+  color: "blue"

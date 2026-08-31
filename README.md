@@ -11,8 +11,9 @@ Action for Docker image build, sign, attest, cosign, and multi-arch manifest mer
 | `sign-image` | (Deprecated) Signs images via Docker Content Trust |
 | `attest-image` | Attests images using GitHub attest-build-provenance and/or attest-sbom |
 | `cosign-image` | Cosigns images via sigstore/cosign, with optional post-sign verification |
+| `notation-image` | Signs images via the Notary Project (Notation), the CNCF successor to Docker Content Trust |
 
-There is also a top-level convenience action (`exo-actions/buildDockerImage-action@v1`) that chains `build-and-push-image` → `sign-image` → `attest-image` → `cosign-image`, and optionally `mirror-image` (set `mirrorTargetRegistry` to mirror the freshly built image to another registry in the same job). It accepts the union of those sub-actions' inputs. `merge-manifest` is not part of this chain — the native multi-arch flow below needs a build matrix across jobs, so it must be called as a separate job.
+There is also a top-level convenience action (`exo-actions/buildDockerImage-action@v1`) that chains `build-and-push-image` → `sign-image` → `attest-image` → `cosign-image` → `notation-image`, and optionally `mirror-image` (set `mirrorTargetRegistry` to mirror the freshly built image to another registry in the same job). It accepts the union of those sub-actions' inputs. `merge-manifest` is not part of this chain — the native multi-arch flow below needs a build matrix across jobs, so it must be called as a separate job.
 
 ---
 
@@ -271,5 +272,28 @@ jobs:
 | `attestImage` | Enable build-provenance attestation | `false` |
 | `attestSBOM` | Generate an SBOM for the image and attest it with GitHub (needs `attestations`/`id-token` write permissions) | `false` |
 | `attestImageRegistry` | Registry for attestation | `docker.io` |
+| `DOCKER_USERNAME` | Registry username | *(required)* |
+| `DOCKER_PASSWORD` | Registry password | *(required)* |
+
+### notation-image
+
+Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` CLI — the CNCF-governed successor to Docker Content Trust. Unlike `cosign-image`, Notation always signs through a KMS-backed plugin (there's no bare-private-key mode); one signature per digest covers every tag pointing at it, so there's no per-tag loop.
+
+| Name | Description | Default |
+|---|---|---|
+| `dockerImage` | Docker image name | *(required)* |
+| `dockerImageDigest` | Image digest to sign/verify | *(required)* |
+| `dockerRegistry` | Docker registry | `docker.io` |
+| `notationImage` | Enable Notation signing | `false` |
+| `notationVersion` | Version of the Notation CLI to install | `1.3.2` |
+| `pluginName` | Signing plugin name (e.g. `azure-kv`, `aws-signer`, `notation-hashicorp-vault`) | `""` |
+| `pluginUrl` / `pluginChecksum` | Download URL and SHA256 of the signing plugin | `""` |
+| `keyId` | KMS key identifier/ARN/URI for the signing key pair | `""` |
+| `signatureFormat` | Signature envelope format: `jws` or `cose` | `cose` |
+| `pluginConfig` | Plugin-defined config (multi-line, `key=value`) | `""` |
+| `timestampUrl` / `timestampRootCert` | RFC 3161 timestamping authority URL and root cert | `""` |
+| `verifyImage` | Run `notation verify` against the signed digest right after signing (requires `trustPolicy`/`trustStore`) | `false` |
+| `trustPolicy` | File path to a Notation `trustpolicy.json` | `""` |
+| `trustStore` | Directory path to a Notation trust store | `""` |
 | `DOCKER_USERNAME` | Registry username | *(required)* |
 | `DOCKER_PASSWORD` | Registry password | *(required)* |
