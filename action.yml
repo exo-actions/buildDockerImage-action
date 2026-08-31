@@ -92,7 +92,7 @@ inputs:
       required: false
       default: "false"
     notationImage:
-      description: "Enable Docker Image Signing (Notation, the Notary Project's CNCF successor to Docker Content Trust). Requires a KMS-backed signing plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...)"
+      description: "Enable Docker Image Signing (Notation, the Notary Project). Requires a KMS-backed signing plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...)"
       required: false
       default: "false"
     notationVersion:

@@ -11,7 +11,7 @@ Action for Docker image build, sign, attest, cosign, and multi-arch manifest mer
 | `sign-image` | (Deprecated) Signs images via Docker Content Trust |
 | `attest-image` | Attests images using GitHub attest-build-provenance and/or attest-sbom |
 | `cosign-image` | Cosigns images via sigstore/cosign, with optional post-sign verification |
-| `notation-image` | Signs images via the Notary Project (Notation), the CNCF successor to Docker Content Trust |
+| `notation-image` | Signs images via the Notary Project (Notation) |
 
 There is also a top-level convenience action (`exo-actions/buildDockerImage-action@v1`) that chains `build-and-push-image` → `sign-image` → `attest-image` → `cosign-image` → `notation-image`, and optionally `mirror-image` (set `mirrorTargetRegistry` to mirror the freshly built image to another registry in the same job). It accepts the union of those sub-actions' inputs. `merge-manifest` is not part of this chain — the native multi-arch flow below needs a build matrix across jobs, so it must be called as a separate job.
 
@@ -277,7 +277,7 @@ jobs:
 
 ### notation-image
 
-Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` CLI — the CNCF-governed successor to Docker Content Trust. Unlike `cosign-image`, Notation always signs through a KMS-backed plugin (there's no bare-private-key mode); one signature per digest covers every tag pointing at it, so there's no per-tag loop.
+Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` CLI, a separate signing mechanism alongside `cosign-image`. Notation always signs through a KMS-backed plugin (there's no bare-private-key mode); one signature per digest covers every tag pointing at it, so there's no per-tag loop.
 
 | Name | Description | Default |
 |---|---|---|

@@ -1,5 +1,5 @@
 name: Notation sign docker image
-description: 'Sign/verify docker images with the Notary Project (Notation), the CNCF successor to Docker Content Trust. Requires a KMS-backed signing plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...)'
+description: 'Sign/verify docker images with the Notary Project (Notation). Requires a KMS-backed signing plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...)'
 inputs:
   dockerImage:
     description: Docker Image
