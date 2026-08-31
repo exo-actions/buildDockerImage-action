@@ -61,7 +61,7 @@ runs:
         upload-artifact: false
     - name: Attest the SBOM with Github
       if: ${{ inputs.attestSBOM == 'true' }}
-      uses: actions/attest-sbom@v4
+      uses: actions/attest@v4
       id: attest-sbom
       with:
         subject-name: ${{ inputs.attestImageRegistry }}/${{ inputs.dockerImage }}
