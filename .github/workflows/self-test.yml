@@ -17,8 +17,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - name: Lowercase self-test image name
+        id: name
+        run: echo "image=${GITHUB_REPOSITORY,,}-selftest" >> "$GITHUB_OUTPUT"
+
   build:
     runs-on: ubuntu-latest
+    needs: prep
     # Fork and Dependabot PRs get a read-only token that cannot push to ghcr.io
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
     permissions:
@@ -43,7 +53,7 @@ jobs:
         id: build
         uses: ./build-and-push-image
         with:
-          dockerImage: ${{ github.repository }}-selftest
+          dockerImage: ${{ needs.prep.outputs.image }}
           dockerImageTag: ci-${{ github.run_id }}
           dockerFileContext: /tmp/selftest
           dockerRegistry: ghcr.io
@@ -60,7 +70,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    needs: build
+    needs: [prep, build]
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -69,7 +79,7 @@ jobs:
       - name: Attest the self-test image
         uses: ./attest-image
         with:
-          dockerImage: ${{ github.repository }}-selftest
+          dockerImage: ${{ needs.prep.outputs.image }}
           dockerImageDigest: ${{ needs.build.outputs.digest }}
           dockerRegistry: ghcr.io
           attestImageRegistry: ghcr.io
@@ -80,7 +90,7 @@ jobs:
       - name: Cosign (keyless) the self-test image
         uses: ./cosign-image
         with:
-          dockerImage: ${{ github.repository }}-selftest
+          dockerImage: ${{ needs.prep.outputs.image }}
           dockerImageTag: ${{ needs.build.outputs.tags }}
           dockerImageDigest: ${{ needs.build.outputs.digest }}
           dockerRegistry: ghcr.io
@@ -95,7 +105,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: build
+    needs: [prep, build]
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -104,10 +114,10 @@ jobs:
       - name: Mirror the self-test image within ghcr.io
         uses: ./mirror-image
         with:
-          sourceImage: ${{ github.repository }}-selftest
+          sourceImage: ${{ needs.prep.outputs.image }}
           sourceTag: ci-${{ github.run_id }}
           sourceRegistry: ghcr.io
-          targetImage: ${{ github.repository }}-selftest-mirrored
+          targetImage: ${{ needs.prep.outputs.image }}-mirrored
           targetRegistry: ghcr.io
           SOURCE_USERNAME: ${{ github.actor }}
           SOURCE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -121,7 +131,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: build
+    needs: [prep, build]
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -138,7 +148,7 @@ jobs:
         id: merge
         uses: ./merge-manifest
         with:
-          dockerImage: ${{ github.repository }}-selftest
+          dockerImage: ${{ needs.prep.outputs.image }}
           dockerImageTag: ci-merged-${{ github.run_id }}
           dockerRegistry: ghcr.io
           digestsDir: /tmp/digests
@@ -156,7 +166,7 @@ jobs:
 
   notation-verify:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [prep, build]
     # Fork and Dependabot PRs get a read-only token that cannot push to ghcr.io
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
     permissions:
@@ -176,12 +186,12 @@ jobs:
       - name: Install Notation CLI
         uses: notaryproject/notation-action/setup@b6fee73110795d6793253c673bd723f12bcf9bbb # v1
         with:
-          version: "1.3.2"
+          version: "1.3.1"
       - name: Sign the self-test image with a throwaway local test key
         # notation-image only drives KMS plugins, so sign with the CLI and a
         # generated test cert, then exercise the action's verify path on it.
         env:
-          REF: ghcr.io/${{ github.repository }}-selftest@${{ needs.build.outputs.digest }}
+          REF: ghcr.io/${{ needs.prep.outputs.image }}@${{ needs.build.outputs.digest }}
         run: |
           notation cert generate-test --default selftest
           notation sign --signature-format cose "$REF"
@@ -203,7 +213,7 @@ jobs:
       - name: Verify with notation-image (verify only)
         uses: ./notation-image
         with:
-          dockerImage: ${{ github.repository }}-selftest
+          dockerImage: ${{ needs.prep.outputs.image }}
           dockerImageDigest: ${{ needs.build.outputs.digest }}
           dockerRegistry: ghcr.io
           notationImage: "false"

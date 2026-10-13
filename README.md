@@ -317,7 +317,7 @@ Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` 
 | `dockerImageDigest` | Image digest to sign/verify | *(required)* |
 | `dockerRegistry` | Docker registry | `docker.io` |
 | `notationImage` | Enable Notation signing | `false` |
-| `notationVersion` | Version of the Notation CLI to install | `1.3.2` |
+| `notationVersion` | Version of the Notation CLI to install | `1.3.1` |
 | `pluginName` | Signing plugin name (e.g. `azure-kv`, `aws-signer`, `notation-hashicorp-vault`) | `""` |
 | `pluginUrl` / `pluginChecksum` | Download URL and SHA256 of the signing plugin | `""` |
 | `keyId` | KMS key identifier/ARN/URI for the signing key pair | `""` |

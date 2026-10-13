@@ -62,11 +62,13 @@ runs:
         images=""
         TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
         for tag in ${TAGS_LIST}; do
-          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
-          docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST}
+          images+="${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${tag}@${DIGEST} "
+          docker pull ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${tag}@${DIGEST}
         done
         cosign sign --yes --key "${COSIGN_KEY_REF:-env://COSIGN_PRIVATE_KEY}" ${images}
       env:
+        DOCKER_REGISTRY: ${{ inputs.dockerRegistry }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
         COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
         COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
         COSIGN_KEY_REF: ${{ inputs.COSIGN_KEY_REF }}
@@ -79,7 +81,7 @@ runs:
         images=""
         TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
         for tag in ${TAGS_LIST}; do
-          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+          images+="${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${tag}@${DIGEST} "
         done
         if [ -n "${COSIGN_KEY_REF}" ]; then
           cosign verify --key "${COSIGN_KEY_REF}" ${images}
@@ -88,6 +90,8 @@ runs:
           cosign verify --key /tmp/cosign.pub ${images}
         fi
       env:
+        DOCKER_REGISTRY: ${{ inputs.dockerRegistry }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
         COSIGN_PASSWORD: ${{ inputs.COSIGN_PASSWORD }}
         COSIGN_PRIVATE_KEY: ${{ inputs.COSIGN_PRIVATE_KEY }}
         COSIGN_KEY_REF: ${{ inputs.COSIGN_KEY_REF }}
@@ -100,10 +104,12 @@ runs:
           images=""
           TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
           for tag in ${TAGS_LIST}; do
-            images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+            images+="${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${tag}@${DIGEST} "
           done
           cosign sign --yes ${images}
       env:
+        DOCKER_REGISTRY: ${{ inputs.dockerRegistry }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
         DIGEST: ${{ inputs.dockerImageDigest }}
         TAGS: ${{ inputs.dockerImageTag }}
     - name: Verify the Cosign keyless (OIDC) signature
@@ -113,13 +119,15 @@ runs:
         images=""
         TAGS_LIST="$(echo $TAGS | jq -r '.[]' | xargs -r)"
         for tag in ${TAGS_LIST}; do
-          images+="${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}:${tag}@${DIGEST} "
+          images+="${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${tag}@${DIGEST} "
         done
         cosign verify \
           --certificate-identity-regexp "^https://github.com/${GITHUB_REPO}/" \
           --certificate-oidc-issuer https://token.actions.githubusercontent.com \
           ${images}
       env:
+        DOCKER_REGISTRY: ${{ inputs.dockerRegistry }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
         DIGEST: ${{ inputs.dockerImageDigest }}
         TAGS: ${{ inputs.dockerImageTag }}
         GITHUB_REPO: ${{ github.repository }}

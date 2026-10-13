@@ -1,0 +1,12 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # The top-level action chains its own sub-actions by the moving v1 tag
+        # (a SHA would have to be bumped by hand on every release).
+        exo-actions/buildDockerImage-action/*: ref-pin
+  self-repository:
+    ignore:
+      # The self-test deliberately uses the `./` form to test the checked-out
+      # actions.
+      - self-test.yml

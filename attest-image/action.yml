@@ -42,7 +42,11 @@ runs:
     - name: Pull image ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
       shell: bash
       if: ${{ inputs.attestImage == 'true' || inputs.attestSBOM == 'true' }}
-      run: docker pull ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}@${{ inputs.dockerImageDigest }}
+      env:
+        DOCKER_REGISTRY: ${{ inputs.dockerRegistry }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
+        DIGEST: ${{ inputs.dockerImageDigest }}
+      run: docker pull "${DOCKER_REGISTRY}/${DOCKER_IMAGE}@${DIGEST}"
     - name: Attest the publised Docker image with Github
       if: ${{ inputs.attestImage == 'true' }}
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
