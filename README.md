@@ -173,6 +173,38 @@ jobs:
 
 ---
 
+## Outputs
+
+| Action | Output | Description |
+|---|---|---|
+| `build-and-push-image` | `tags` | Pushed image tags |
+| `build-and-push-image` | `digest` | Pushed image digest (`sha256:...`) |
+| `merge-manifest` | `digest` | Digest of the merged multi-arch manifest (first tag) |
+| `mirror-image` | `digest` | Digest of the mirrored image (first tag) |
+| `mirror-image` | `tagsJson` | Mirrored tags as a JSON array |
+
+`sign-image`, `attest-image`, `cosign-image` and `notation-image` produce no outputs; feed them the `digest` from the build step.
+
+---
+
+## Choosing a signing mechanism
+
+| | `cosign-image` | `notation-image` |
+|---|---|---|
+| Ecosystem | Sigstore | Notary Project (CNCF) |
+| Keyless (OIDC) | Yes (`cosignOidcImage`) | No |
+| Key material | Private key, or keyless | KMS-backed plugin only (Azure Key Vault, AWS Signer, HashiCorp Vault, ...) |
+| Verification | Against the signing identity or public key | Against an explicit `trustpolicy.json` and trust store |
+| Pick it when | You want zero key management on GitHub-hosted runners | Your consumers (e.g. Ratify, Azure/AWS admission) enforce Notary signatures |
+
+Both sign the digest, so they can be combined on the same image. Docker Content Trust (`sign-image`) is deprecated; prefer one of the two above.
+
+## CI
+
+`Lint actions` runs actionlint and zizmor on every push. `Self-test composite actions` runs the sub-actions end to end against ghcr.io (manually, and on same-repo PRs touching an `action.yml`); `notation-image` is covered on its verify path with a throwaway local key, since signing needs a KMS plugin. All third-party actions are pinned to commit SHAs.
+
+---
+
 ## Inputs
 
 ### build-and-push-image

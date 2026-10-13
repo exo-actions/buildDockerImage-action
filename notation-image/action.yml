@@ -74,14 +74,14 @@ runs:
   steps:
     - name: Log in to Docker Registry
       if: ${{ inputs.notationImage == 'true' || inputs.verifyImage == 'true' }}
-      uses: docker/login-action@v4
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
     - name: Install Notation CLI
       if: ${{ inputs.notationImage == 'true' || inputs.verifyImage == 'true' }}
-      uses: notaryproject/notation-action/setup@v1
+      uses: notaryproject/notation-action/setup@b6fee73110795d6793253c673bd723f12bcf9bbb # v1
       with:
         version: ${{ inputs.notationVersion }}
     - name: Resolve target artifact reference
@@ -95,7 +95,7 @@ runs:
       run: echo "reference=${DOCKER_REGISTRY}/${DOCKER_IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
     - name: Sign the image with Notation
       if: ${{ inputs.notationImage == 'true' }}
-      uses: notaryproject/notation-action/sign@v1
+      uses: notaryproject/notation-action/sign@b6fee73110795d6793253c673bd723f12bcf9bbb # v1
       with:
         plugin_name: ${{ inputs.pluginName }}
         plugin_url: ${{ inputs.pluginUrl }}
@@ -108,7 +108,7 @@ runs:
         timestamp_root_cert: ${{ inputs.timestampRootCert }}
     - name: Verify the Notation signature
       if: ${{ inputs.verifyImage == 'true' }}
-      uses: notaryproject/notation-action/verify@v1
+      uses: notaryproject/notation-action/verify@b6fee73110795d6793253c673bd723f12bcf9bbb # v1
       with:
         target_artifact_reference: ${{ steps.target.outputs.reference }}
         trust_policy: ${{ inputs.trustPolicy }}
