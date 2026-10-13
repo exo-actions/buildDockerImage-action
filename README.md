@@ -312,7 +312,7 @@ Both sign the digest, so they can be combined on the same image. Docker Content 
 Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` CLI, a separate signing mechanism alongside `cosign-image`. Two signing modes; one signature per digest covers every tag pointing at it, so there's no per-tag loop.
 
 - **Plugin mode:** sign through a KMS-backed plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...) with `pluginName`, `pluginUrl`, `pluginChecksum` and `keyId`.
-- **Local-key mode (free, no service):** set `signingKey` and `signingCert` (PEM, from secrets). The key is imported into the runner's Notation config for the job and deleted afterwards. The key must be unencrypted and the certificate needs a code-signing EKU and digital signature key usage.
+- **Local-key mode (free, no service):** set `signingKey` and `signingCert` (PEM, from secrets). The key is registered in the runner's Notation config for the signing step and its files are removed afterwards. The key must be unencrypted and the certificate needs a code-signing EKU and digital signature key usage.
 
 ```yaml
 - uses: exo-actions/buildDockerImage-action/notation-image@v1

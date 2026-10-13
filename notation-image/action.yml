@@ -151,11 +151,20 @@ runs:
         REFERENCE: ${{ steps.target.outputs.reference }}
       run: |
         umask 077
-        keydir="$(mktemp -d "${RUNNER_TEMP}/notation-key.XXXXXX")"
-        trap 'rm -rf "$keydir"' EXIT
-        printf '%s\n' "$SIGNING_KEY" > "$keydir/key.pem"
-        printf '%s\n' "$SIGNING_CERT" > "$keydir/cert.pem"
-        notation key add --default --name "$KEY_NAME" "$keydir/key.pem" "$keydir/cert.pem"
+        # `notation key add` only registers plugin keys (1.3.x), so register the
+        # local key pair in signingkeys.json directly, as `cert generate-test` does.
+        confdir="${XDG_CONFIG_HOME:-$HOME/.config}/notation"
+        keydir="${confdir}/localkeys"
+        mkdir -p "$keydir"
+        trap 'rm -f "$keydir/${KEY_NAME}.key" "$keydir/${KEY_NAME}.crt"' EXIT
+        printf '%s\n' "$SIGNING_KEY" > "$keydir/${KEY_NAME}.key"
+        printf '%s\n' "$SIGNING_CERT" > "$keydir/${KEY_NAME}.crt"
+        keysfile="${confdir}/signingkeys.json"
+        [ -f "$keysfile" ] || echo '{"keys":[]}' > "$keysfile"
+        jq --arg n "$KEY_NAME" --arg k "$keydir/${KEY_NAME}.key" --arg c "$keydir/${KEY_NAME}.crt" \
+          '.default = $n | .keys = ((.keys // []) | map(select(.name != $n)) + [{name: $n, keyPath: $k, certPath: $c}])' \
+          "$keysfile" > "${keysfile}.tmp"
+        mv "${keysfile}.tmp" "$keysfile"
         args=(sign --key "$KEY_NAME" --signature-format "$SIGNATURE_FORMAT")
         if [ -n "$TIMESTAMP_URL" ]; then
           args+=(--timestamp-url "$TIMESTAMP_URL" --timestamp-root-cert "$TIMESTAMP_ROOT_CERT")
