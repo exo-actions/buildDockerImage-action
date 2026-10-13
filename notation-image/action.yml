@@ -1,5 +1,5 @@
 name: Notation sign docker image
-description: 'Sign/verify docker images with the Notary Project (Notation). Requires a KMS-backed signing plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...)'
+description: 'Sign/verify docker images with the Notary Project (Notation). Signs with a KMS-backed plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...) or, with signingKey/signingCert, a local key and certificate (no service needed)'
 inputs:
   dockerImage:
     description: Docker Image
@@ -18,7 +18,7 @@ inputs:
     description: Docker Registry user password
     required: true
   notationImage:
-    description: Enable Docker Image Signing (Notation)
+    description: Enable Docker Image Signing (Notation). Needs either signingKey and signingCert (local mode) or the plugin inputs (pluginName, pluginUrl, pluginChecksum, keyId)
     required: false
     default: "false"
   notationVersion:
@@ -26,21 +26,33 @@ inputs:
     required: false
     default: "1.3.1"
   pluginName:
-    description: "Name of the Notation signing plugin (e.g. azure-kv, aws-signer, notation-hashicorp-vault). Required when notationImage is true"
+    description: "Name of the Notation signing plugin (e.g. azure-kv, aws-signer, notation-hashicorp-vault). Required in plugin mode"
     required: false
     default: ""
   pluginUrl:
-    description: "Download URL of the signing plugin. Required when notationImage is true"
+    description: "Download URL of the signing plugin. Required in plugin mode"
     required: false
     default: ""
   pluginChecksum:
-    description: "SHA256 checksum of the signing plugin. Required when notationImage is true"
+    description: "SHA256 checksum of the signing plugin. Required in plugin mode"
     required: false
     default: ""
   keyId:
-    description: "KMS key identifier/ARN/URI for the signing key pair, as expected by the plugin. Required when notationImage is true"
+    description: "KMS key identifier/ARN/URI for the signing key pair, as expected by the plugin. Required in plugin mode"
     required: false
     default: ""
+  signingKey:
+    description: "Local signing mode: PEM private key (unencrypted) used to sign, typically from a secret. Selects local mode and replaces the plugin inputs. Requires signingCert"
+    required: false
+    default: ""
+  signingCert:
+    description: "Local signing mode: PEM certificate (chain) matching signingKey. Needs a code-signing EKU and digital signature key usage"
+    required: false
+    default: ""
+  signingKeyName:
+    description: "Local signing mode: name under which the key is registered in the Notation config"
+    required: false
+    default: "ci-signing-key"
   signatureFormat:
     description: "Signature envelope format: jws or cose"
     required: false
@@ -93,8 +105,28 @@ runs:
         DOCKER_IMAGE: ${{ inputs.dockerImage }}
         DIGEST: ${{ inputs.dockerImageDigest }}
       run: echo "reference=${DOCKER_REGISTRY}/${DOCKER_IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
-    - name: Sign the image with Notation
+    - name: Validate signing inputs
       if: ${{ inputs.notationImage == 'true' }}
+      shell: bash
+      env:
+        SIGNING_KEY: ${{ inputs.signingKey }}
+        SIGNING_CERT: ${{ inputs.signingCert }}
+        PLUGIN_NAME: ${{ inputs.pluginName }}
+        PLUGIN_URL: ${{ inputs.pluginUrl }}
+        PLUGIN_CHECKSUM: ${{ inputs.pluginChecksum }}
+        KEY_ID: ${{ inputs.keyId }}
+      run: |
+        if [ -n "$SIGNING_KEY" ]; then
+          if [ -z "$SIGNING_CERT" ]; then
+            echo "::error::signingCert is required when signingKey is set (local signing mode)"
+            exit 1
+          fi
+        elif [ -z "$PLUGIN_NAME" ] || [ -z "$PLUGIN_URL" ] || [ -z "$PLUGIN_CHECKSUM" ] || [ -z "$KEY_ID" ]; then
+          echo "::error::notationImage needs either signingKey+signingCert (local mode) or pluginName, pluginUrl, pluginChecksum and keyId (plugin mode)"
+          exit 1
+        fi
+    - name: Sign the image with Notation (plugin)
+      if: ${{ inputs.notationImage == 'true' && inputs.signingKey == '' }}
       uses: notaryproject/notation-action/sign@b6fee73110795d6793253c673bd723f12bcf9bbb # v1
       with:
         plugin_name: ${{ inputs.pluginName }}
@@ -106,6 +138,38 @@ runs:
         plugin_config: ${{ inputs.pluginConfig }}
         timestamp_url: ${{ inputs.timestampUrl }}
         timestamp_root_cert: ${{ inputs.timestampRootCert }}
+    - name: Sign the image with Notation (local key)
+      if: ${{ inputs.notationImage == 'true' && inputs.signingKey != '' }}
+      shell: bash
+      env:
+        SIGNING_KEY: ${{ inputs.signingKey }}
+        SIGNING_CERT: ${{ inputs.signingCert }}
+        KEY_NAME: ${{ inputs.signingKeyName }}
+        SIGNATURE_FORMAT: ${{ inputs.signatureFormat }}
+        TIMESTAMP_URL: ${{ inputs.timestampUrl }}
+        TIMESTAMP_ROOT_CERT: ${{ inputs.timestampRootCert }}
+        REFERENCE: ${{ steps.target.outputs.reference }}
+      run: |
+        umask 077
+        # `notation key add` only registers plugin keys (1.3.x), so register the
+        # local key pair in signingkeys.json directly, as `cert generate-test` does.
+        confdir="${XDG_CONFIG_HOME:-$HOME/.config}/notation"
+        keydir="${confdir}/localkeys"
+        mkdir -p "$keydir"
+        trap 'rm -f "$keydir/${KEY_NAME}.key" "$keydir/${KEY_NAME}.crt"' EXIT
+        printf '%s\n' "$SIGNING_KEY" > "$keydir/${KEY_NAME}.key"
+        printf '%s\n' "$SIGNING_CERT" > "$keydir/${KEY_NAME}.crt"
+        keysfile="${confdir}/signingkeys.json"
+        [ -f "$keysfile" ] || echo '{"keys":[]}' > "$keysfile"
+        jq --arg n "$KEY_NAME" --arg k "$keydir/${KEY_NAME}.key" --arg c "$keydir/${KEY_NAME}.crt" \
+          '.default = $n | .keys = ((.keys // []) | map(select(.name != $n)) + [{name: $n, keyPath: $k, certPath: $c}])' \
+          "$keysfile" > "${keysfile}.tmp"
+        mv "${keysfile}.tmp" "$keysfile"
+        args=(sign --key "$KEY_NAME" --signature-format "$SIGNATURE_FORMAT")
+        if [ -n "$TIMESTAMP_URL" ]; then
+          args+=(--timestamp-url "$TIMESTAMP_URL" --timestamp-root-cert "$TIMESTAMP_ROOT_CERT")
+        fi
+        notation "${args[@]}" "$REFERENCE"
     - name: Verify the Notation signature
       if: ${{ inputs.verifyImage == 'true' }}
       uses: notaryproject/notation-action/verify@b6fee73110795d6793253c673bd723f12bcf9bbb # v1

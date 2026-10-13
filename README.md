@@ -193,7 +193,7 @@ jobs:
 |---|---|---|
 | Ecosystem | Sigstore | Notary Project (CNCF) |
 | Keyless (OIDC) | Yes (`cosignOidcImage`) | No |
-| Key material | Private key, or keyless | KMS-backed plugin only (Azure Key Vault, AWS Signer, HashiCorp Vault, ...) |
+| Key material | Private key, or keyless | KMS-backed plugin, or a local key and certificate |
 | Verification | Against the signing identity or public key | Against an explicit `trustpolicy.json` and trust store |
 | Pick it when | You want zero key management on GitHub-hosted runners | Your consumers (e.g. Ratify, Azure/AWS admission) enforce Notary signatures |
 
@@ -201,7 +201,7 @@ Both sign the digest, so they can be combined on the same image. Docker Content 
 
 ## CI
 
-`Lint actions` runs actionlint and zizmor on every push. `Self-test composite actions` runs the sub-actions end to end against ghcr.io (manually, and on same-repo PRs touching an `action.yml`); `notation-image` is covered on its verify path with a throwaway local key, since signing needs a KMS plugin. All third-party actions are pinned to commit SHAs.
+`Lint actions` runs actionlint and zizmor on every push. `Self-test composite actions` runs the sub-actions end to end against ghcr.io (manually, and on same-repo PRs touching an `action.yml`); `notation-image` is covered end to end (sign and verify) in local-key mode with a throwaway key; plugin mode needs a KMS and is not covered. All third-party actions are pinned to commit SHAs.
 
 ---
 
@@ -309,7 +309,24 @@ Both sign the digest, so they can be combined on the same image. Docker Content 
 
 ### notation-image
 
-Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` CLI, a separate signing mechanism alongside `cosign-image`. Notation always signs through a KMS-backed plugin (there's no bare-private-key mode); one signature per digest covers every tag pointing at it, so there's no per-tag loop.
+Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` CLI, a separate signing mechanism alongside `cosign-image`. Two signing modes; one signature per digest covers every tag pointing at it, so there's no per-tag loop.
+
+- **Plugin mode:** sign through a KMS-backed plugin (Azure Key Vault, AWS Signer, HashiCorp Vault, ...) with `pluginName`, `pluginUrl`, `pluginChecksum` and `keyId`.
+- **Local-key mode (free, no service):** set `signingKey` and `signingCert` (PEM, from secrets). The key is registered in the runner's Notation config for the signing step and its files are removed afterwards. The key must be unencrypted and the certificate needs a code-signing EKU and digital signature key usage.
+
+```yaml
+- uses: exo-actions/buildDockerImage-action/notation-image@v1
+  with:
+    dockerImage: exoplatform/example
+    dockerImageDigest: ${{ needs.build.outputs.digest }}
+    notationImage: "true"
+    signingKey: ${{ secrets.NOTATION_SIGNING_KEY }}
+    signingCert: ${{ secrets.NOTATION_SIGNING_CERT }}
+    DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+    DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+```
+
+Generate a key and certificate once with `openssl req -x509 -newkey rsa:3072 -nodes -days 365 -keyout key.pem -out cert.pem -subj "/CN=myorg-signing/O=myorg" -addext basicConstraints=critical,CA:FALSE -addext keyUsage=critical,digitalSignature -addext extendedKeyUsage=codeSigning`, store both as secrets (ideally on a protected environment), and give consumers `cert.pem` for their trust store. Rotate before the certificate expires.
 
 | Name | Description | Default |
 |---|---|---|
@@ -321,6 +338,8 @@ Signs/verifies via the [Notary Project](https://notaryproject.dev)'s `notation` 
 | `pluginName` | Signing plugin name (e.g. `azure-kv`, `aws-signer`, `notation-hashicorp-vault`) | `""` |
 | `pluginUrl` / `pluginChecksum` | Download URL and SHA256 of the signing plugin | `""` |
 | `keyId` | KMS key identifier/ARN/URI for the signing key pair | `""` |
+| `signingKey` / `signingCert` | Local-key mode: PEM private key and certificate (chain). Replaces the plugin inputs | `""` |
+| `signingKeyName` | Local-key mode: name the key is registered under | `ci-signing-key` |
 | `signatureFormat` | Signature envelope format: `jws` or `cose` | `cose` |
 | `pluginConfig` | Plugin-defined config (multi-line, `key=value`) | `""` |
 | `timestampUrl` / `timestampRootCert` | RFC 3161 timestamping authority URL and root cert | `""` |
