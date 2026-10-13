@@ -46,7 +46,7 @@ runs:
   using: "composite"  
   steps:
     - name: Log in to Docker Registry
-      if: ${{ inputs.cosignImage == 'true' }}
+      if: ${{ inputs.cosignImage == 'true' || inputs.cosignOidcImage == 'true' }}
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
       with:
         registry: ${{ inputs.dockerRegistry }}
