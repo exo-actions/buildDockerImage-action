@@ -93,31 +93,35 @@ runs:
   using: "composite"
   steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        persist-credentials: false
     - name: Log in to Docker Registry
-      uses: docker/login-action@v4
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
       with:
         registry: ${{ inputs.dockerRegistry }}
         username: ${{ inputs.DOCKER_USERNAME }}
         password: ${{ inputs.DOCKER_PASSWORD }}
     - name: Set up QEMU
       if: ${{ inputs.qemu == 'true' }}
-      uses: docker/setup-qemu-action@v4
+      uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
       with:
         platforms: ${{ inputs.platforms }}
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       with:
         driver: docker-container
     - name: Build list of additional tags
       id: additional-tags
-      uses: actions/github-script@v9
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      env:
+        TAGS: ${{ inputs.dockerImageTag }}
       with:
         script: |
-          core.setOutput('tags', `${{ inputs.dockerImageTag }}`.split(",").join("\n"))
+          core.setOutput('tags', process.env.TAGS.split(",").join("\n"))
     - name: Extract metadata (tags, labels) for Docker
       id: meta
-      uses: docker/metadata-action@v6
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
       with:
         images: ${{ inputs.dockerRegistry }}/${{ inputs.dockerImage }}
         tags: |
@@ -146,7 +150,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
     - name: Build and push Docker image to Registry
       id: push
-      uses: docker/build-push-action@v7
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
       with:
         context: ${{ inputs.dockerFileContext }}
         file: ${{ inputs.dockerFile }}
@@ -168,13 +172,17 @@ runs:
     - name: Build Json array of tags for Docker Signing
       shell: bash
       id: additional-jsontags
+      env:
+        TAGS: ${{ inputs.dockerImageTag }}
       run: |
-        echo tags=$(echo ${{ inputs.dockerImageTag }} | sed 's/,/\n/g'| jq --raw-input | jq --slurp -c) >> $GITHUB_OUTPUT
+        echo tags=$(echo "$TAGS" | sed 's/,/\n/g'| jq --raw-input | jq --slurp -c) >> "$GITHUB_OUTPUT"
     - name: Get Digests for attest and cosign
       shell: bash
       id: get-digest
+      env:
+        DIGEST: ${{ steps.push.outputs.digest }}
       run: |
-        echo digest=$(echo ${{ steps.push.outputs.digest}}) >> $GITHUB_OUTPUT
+        echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 branding:
   icon: "anchor"
   color: "gray-dark"
